@@ -9,6 +9,7 @@ if BASE_DIR not in sys.path:
 import pymysql
 import requests
 
+from common.match_utils import parse_match_name
 from config.caizhanyun_config import CAIZHANYUN_CONFIG
 from database.mysql import get_conn
 
@@ -54,10 +55,10 @@ def get_detail(pid):
 def save_match(cursor, item):
     match_id = item["matchId"]
 
-    teams = item["team"].split(":")
+    parsed_match = parse_match_name(item.get("team"))
 
-    home = teams[0]
-    away = teams[1]
+    home = parsed_match["home_team"] or ""
+    away = parsed_match["away_team"] or ""
 
     cursor.execute(
         """

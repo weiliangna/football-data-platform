@@ -1,7 +1,6 @@
-import sys
 import os
+import sys
 import time
-from datetime import datetime
 
 
 BASE_DIR = os.path.dirname(
@@ -10,39 +9,50 @@ BASE_DIR = os.path.dirname(
     )
 )
 
-sys.path.insert(
-    0,
-    BASE_DIR
-)
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 
 from database.mysql import get_conn
-import pymysql
+from spider.run_job import redact_sensitive_text
 
 
+PLATFORMS = (
+    {
+        "platform_id": 1,
+        "platform_name": "彩站云",
+        "status": None,
+    },
+    {
+        "platform_id": 3,
+        "platform_name": "鸿瑞",
+        "status": "external_scheduler",
+    },
+    {
+        "platform_id": 2,
+        "platform_name": "州运宝",
+        "status": "waiting_config",
+    },
+    {
+        "platform_id": 4,
+        "platform_name": "云彩",
+        "status": "waiting_config",
+    },
+)
 
-def save_sync_log(
-        platform_name,
-        new_count,
-        duplicate_count,
-        cost_time,
-        status="success"
-):
 
+def save_sync_log(record):
     conn = None
     cursor = None
 
     try:
-
         conn = get_conn()
-
         cursor = conn.cursor()
-
-
         cursor.execute(
             """
             INSERT INTO sync_log
             (
+                platform_id,
                 platform_name,
                 new_count,
                 duplicate_count,
@@ -50,7 +60,6 @@ def save_sync_log(
                 cost_time,
                 created_time
             )
-
             VALUES
             (
                 %s,
@@ -58,206 +67,115 @@ def save_sync_log(
                 %s,
                 %s,
                 %s,
+                %s,
                 NOW()
             )
-
             """,
             (
-                platform_name,
-                new_count,
-                duplicate_count,
-                status,
-                cost_time
-            )
+                record["platform_id"],
+                record["platform_name"],
+                record.get("new_count", 0),
+                record.get("duplicate_count", 0),
+                record["status"],
+                record.get("cost_time", 0),
+            ),
         )
-
-
         conn.commit()
-
-
-    except Exception as e:
-
+    except Exception as exc:
         print(
             "写入同步日志失败:",
-            e
+            redact_sensitive_text(str(exc)),
         )
-
-
     finally:
-
         if cursor:
             cursor.close()
-
         if conn:
             conn.close()
 
 
-
 def run_caizhanyun():
-
-    start = time.time()
-
-
-    new_count = 0
-
-    duplicate_count = 0
-
+    started = time.time()
 
     try:
-
-        print(
-            "采集：彩站云"
-        )
-
-
         from spider.caizhanyun_pipeline import main
 
+        result = main([]) or {}
+        failed_count = int(result.get("failed_count") or 0)
 
-        result = main()
+        return {
+            "platform_id": 1,
+            "platform_name": "彩站云",
+            "new_count": int(result.get("new_count") or 0),
+            "duplicate_count": int(result.get("duplicate_count") or 0),
+            "status": "failed" if failed_count else "success",
+            "cost_time": round(time.time() - started, 2),
+        }
+    except Exception as exc:
+        print(
+            "彩站云采集失败:",
+            redact_sensitive_text(str(exc)),
+        )
+        return {
+            "platform_id": 1,
+            "platform_name": "彩站云",
+            "new_count": 0,
+            "duplicate_count": 0,
+            "status": "failed",
+            "cost_time": round(time.time() - started, 2),
+        }
 
 
-        # 兼容旧版本
-        if isinstance(result, dict):
+def build_external_statuses():
+    return [
+        {
+            "platform_id": platform["platform_id"],
+            "platform_name": platform["platform_name"],
+            "new_count": 0,
+            "duplicate_count": 0,
+            "status": platform["status"],
+            "cost_time": 0,
+        }
+        for platform in PLATFORMS
+        if platform["platform_id"] != 1
+    ]
 
-            new_count = result.get(
-                "new_count",
-                0
+
+def run(caizhanyun_runner=None, status_recorder=None):
+    runner = caizhanyun_runner or run_caizhanyun
+    recorder = status_recorder or save_sync_log
+
+    try:
+        caizhanyun_status = runner()
+        if not isinstance(caizhanyun_status, dict):
+            raise TypeError("彩站云运行结果必须是字典")
+    except Exception as exc:
+        print(
+            "彩站云状态生成失败:",
+            redact_sensitive_text(str(exc)),
+        )
+        caizhanyun_status = {
+            "platform_id": 1,
+            "platform_name": "彩站云",
+            "new_count": 0,
+            "duplicate_count": 0,
+            "status": "failed",
+            "cost_time": 0,
+        }
+
+    statuses = [caizhanyun_status]
+    statuses.extend(build_external_statuses())
+
+    for record in statuses:
+        try:
+            recorder(record)
+        except Exception as exc:
+            print(
+                f"{record['platform_name']} 状态记录失败:",
+                redact_sensitive_text(str(exc)),
             )
 
-            duplicate_count = result.get(
-                "duplicate_count",
-                0
-            )
+    return statuses
 
 
-        cost = round(
-            time.time()-start,
-            2
-        )
-
-
-        save_sync_log(
-            "彩站云",
-            new_count,
-            duplicate_count,
-            cost
-        )
-
-
-        print(
-            f"彩站云完成 新增:{new_count} 重复:{duplicate_count} 耗时:{cost}s"
-        )
-
-
-
-    except Exception as e:
-
-
-        cost = round(
-            time.time()-start,
-            2
-        )
-
-
-        save_sync_log(
-            "彩站云",
-            0,
-            0,
-            cost,
-            "failed"
-        )
-
-
-        print(
-            "彩站云异常:",
-            e
-        )
-
-
-
-
-
-def run_empty_platform(name):
-
-    start=time.time()
-
-
-    print(
-        f"采集：{name}"
-    )
-
-
-    cost=round(
-        time.time()-start,
-        2
-    )
-
-
-    save_sync_log(
-        name,
-        0,
-        0,
-        cost,
-        "waiting"
-    )
-
-
-    print(
-        f"{name}接口待接入"
-    )
-
-
-
-
-def run():
-
-
-    print("="*60)
-
-    print(
-        "开始四平台订单采集"
-    )
-
-    print("="*60)
-
-
-
-    # 彩站云
-
-    run_caizhanyun()
-
-
-
-    # 其他平台
-
-    run_empty_platform(
-        "州运宝"
-    )
-
-
-    run_empty_platform(
-        "鸿瑞"
-    )
-
-
-    run_empty_platform(
-        "云彩"
-    )
-
-
-
-    print("="*60)
-
-    print(
-        "四平台采集完成"
-    )
-
-    print("="*60)
-
-
-
-
-if __name__=="__main__":
-
+if __name__ == "__main__":
     run()
-

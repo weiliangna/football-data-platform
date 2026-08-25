@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pymysql
 from fastapi import APIRouter
 
+from common.match_utils import parse_match_name
 from database.mysql import get_conn
 
 
@@ -49,13 +50,13 @@ def normalize_text(value):
     return re.sub(r"\s+", "", text)
 
 
+
 def split_match_name(value):
-    text = str(value or "").strip()
-    for sep in (":", "：", " VS ", " vs ", " V ", " v "):
-        if sep in text:
-            home, away = text.split(sep, 1)
-            return home.strip(), away.strip()
-    return text, ""
+    parsed = parse_match_name(value)
+    return (
+        parsed["home_team"] or "",
+        parsed["away_team"] or "",
+    )
 
 
 def split_options(value):
@@ -191,6 +192,7 @@ def load_profiles(cursor):
     return result
 
 
+
 def load_match_schedule(cursor):
     by_code = {}
     by_name = {}
@@ -200,13 +202,22 @@ def load_match_schedule(cursor):
         if not columns:
             return by_code, by_name
 
-        time_col = next(
+        exact_col = next(
             (
                 value
                 for value in (
                     "deadline_time",
                     "stop_time",
                     "end_sale_time",
+                )
+                if value in columns
+            ),
+            None,
+        )
+        proxy_col = next(
+            (
+                value
+                for value in (
                     "match_time",
                     "start_time",
                     "kickoff_time",
@@ -218,18 +229,22 @@ def load_match_schedule(cursor):
             None,
         )
 
-        if not time_col:
+        if not exact_col and not proxy_col:
             return by_code, by_name
 
         code_col = next(
             (
                 value
-                for value in ("match_code", "week_name", "code")
+                for value in (
+                    "match_code",
+                    "week_name",
+                    "code",
+                    "match_id",
+                )
                 if value in columns
             ),
             None,
         )
-
         name_col = next(
             (
                 value
@@ -238,35 +253,93 @@ def load_match_schedule(cursor):
             ),
             None,
         )
+        home_col = next(
+            (
+                value
+                for value in ("home_team", "home")
+                if value in columns
+            ),
+            None,
+        )
+        away_col = next(
+            (
+                value
+                for value in ("away_team", "away")
+                if value in columns
+            ),
+            None,
+        )
 
-        select_fields = [f"`{time_col}` AS deadline_value"]
-        select_fields.append(
-            f"`{code_col}` AS match_code"
-            if code_col
-            else "'' AS match_code"
-        )
-        select_fields.append(
-            f"`{name_col}` AS match_name"
-            if name_col
-            else "'' AS match_name"
-        )
+        select_fields = [
+            (
+                f"`{exact_col}` AS exact_value"
+                if exact_col
+                else "NULL AS exact_value"
+            ),
+            (
+                f"`{proxy_col}` AS proxy_value"
+                if proxy_col
+                else "NULL AS proxy_value"
+            ),
+            (
+                f"`{code_col}` AS match_code"
+                if code_col
+                else "'' AS match_code"
+            ),
+            (
+                f"`{name_col}` AS match_name"
+                if name_col
+                else "'' AS match_name"
+            ),
+            (
+                f"`{home_col}` AS home_team"
+                if home_col
+                else "'' AS home_team"
+            ),
+            (
+                f"`{away_col}` AS away_team"
+                if away_col
+                else "'' AS away_team"
+            ),
+        ]
+        order_col = exact_col or proxy_col
 
         cursor.execute(
             f"""
             SELECT {",".join(select_fields)}
             FROM matches
-            ORDER BY `{time_col}` DESC
+            ORDER BY `{order_col}` DESC
             LIMIT 1000
             """
         )
 
         for row in cursor.fetchall():
-            deadline = parse_datetime(row.get("deadline_value"))
-            if not deadline:
+            exact_time = parse_datetime(row.get("exact_value"))
+            proxy_time = parse_datetime(row.get("proxy_value"))
+
+            if exact_time:
+                deadline = {
+                    "deadline_time": exact_time,
+                    "deadline_source": "deadline",
+                    "deadline_exact": True,
+                }
+            elif proxy_time:
+                deadline = {
+                    "deadline_time": proxy_time,
+                    "deadline_source": "kickoff_proxy",
+                    "deadline_exact": False,
+                }
+            else:
                 continue
 
             code = normalize_text(row.get("match_code"))
-            name = normalize_text(row.get("match_name")).lower()
+            raw_name = row.get("match_name") or ""
+            if not raw_name:
+                home_team = str(row.get("home_team") or "").strip()
+                away_team = str(row.get("away_team") or "").strip()
+                if home_team and away_team:
+                    raw_name = f"{home_team}:{away_team}"
+            name = normalize_text(raw_name).lower()
 
             if code:
                 by_code[code] = deadline
@@ -349,10 +422,15 @@ def load_order_matches(cursor, order_ids):
     return grouped
 
 
+
 def match_deadline(match_row, schedule_by_code, schedule_by_name):
     direct = parse_datetime(match_row.get("deadline_time"))
     if direct:
-        return direct
+        return {
+            "deadline_time": direct,
+            "deadline_source": "deadline",
+            "deadline_exact": True,
+        }
 
     code = normalize_text(match_row.get("match_code"))
     if code and code in schedule_by_code:
@@ -365,12 +443,12 @@ def match_deadline(match_row, schedule_by_code, schedule_by_name):
     return None
 
 
-def is_order_unexpired(
+def resolve_order_deadline(
     order,
     matches,
     now,
     schedule_by_code,
-    schedule_by_name
+    schedule_by_name,
 ):
     deadlines = []
 
@@ -378,15 +456,46 @@ def is_order_unexpired(
         deadline = match_deadline(
             match,
             schedule_by_code,
-            schedule_by_name
+            schedule_by_name,
         )
-        if deadline:
+        if deadline and deadline.get("deadline_time"):
             deadlines.append(deadline)
 
     if deadlines:
-        return min(deadlines) > now
+        earliest = min(
+            deadlines,
+            key=lambda item: item["deadline_time"],
+        )
+        return {
+            "unexpired": earliest["deadline_time"] > now,
+            "deadline_time": earliest["deadline_time"],
+            "deadline_source": earliest["deadline_source"],
+            "deadline_exact": bool(earliest["deadline_exact"]),
+        }
 
-    return str(order.get("result") or "") == "待开奖"
+    pending = str(order.get("result") or "") == "待开奖"
+    return {
+        "unexpired": pending,
+        "deadline_time": None,
+        "deadline_source": "pending_fallback" if pending else None,
+        "deadline_exact": False,
+    }
+
+
+def is_order_unexpired(
+    order,
+    matches,
+    now,
+    schedule_by_code,
+    schedule_by_name,
+):
+    return resolve_order_deadline(
+        order,
+        matches,
+        now,
+        schedule_by_code,
+        schedule_by_name,
+    )["unexpired"]
 
 
 def format_match_row(row, alias_map, platform_id):
@@ -412,6 +521,15 @@ def format_match_row(row, alias_map, platform_id):
         "away_score": row.get("away_score"),
         "half_home_score": row.get("half_home_score"),
         "half_away_score": row.get("half_away_score"),
+        "deadline_time": parse_datetime(row.get("deadline_time")),
+        "deadline_source": (
+            "deadline"
+            if parse_datetime(row.get("deadline_time"))
+            else None
+        ),
+        "deadline_exact": bool(
+            parse_datetime(row.get("deadline_time"))
+        ),
     }
 
 
@@ -428,6 +546,16 @@ def enrich_order(order, matches, alias_map, profiles):
         )
         for row in matches
     ]
+
+    deadline_state = order.get("_deadline_state")
+    if not deadline_state:
+        deadline_state = resolve_order_deadline(
+            order,
+            matches,
+            datetime.now(),
+            {},
+            {},
+        )
 
     return {
         "id": intv(order.get("id")),
@@ -461,8 +589,12 @@ def enrich_order(order, matches, alias_map, profiles):
         "result": order.get("result") or "待开奖",
         "profit": money(order.get("profit")),
         "bonus": money(order.get("platform_bonus")),
+        "deadline_time": deadline_state["deadline_time"],
+        "deadline_source": deadline_state["deadline_source"],
+        "deadline_exact": bool(deadline_state["deadline_exact"]),
         "matches": formatted_matches,
     }
+
 
 
 def build_current_context(cursor):
@@ -477,28 +609,38 @@ def build_current_context(cursor):
     orders = load_orders_for_day(
         cursor,
         target_day,
-        pending_only=True
+        pending_only=True,
     )
-
     grouped = load_order_matches(
         cursor,
-        [intv(order.get("id")) for order in orders]
+        [intv(order.get("id")) for order in orders],
     )
 
     unexpired = []
+    deadline_summary = {
+        "deadline": 0,
+        "kickoff_proxy": 0,
+        "pending_fallback": 0,
+    }
 
     for order in orders:
         order_id = intv(order.get("id"))
         order_matches = grouped.get(order_id, [])
-
-        if is_order_unexpired(
+        deadline_state = resolve_order_deadline(
             order,
             order_matches,
             now,
             schedule_by_code,
             schedule_by_name,
-        ):
-            unexpired.append((order, order_matches))
+        )
+
+        if deadline_state["unexpired"]:
+            enriched_order = dict(order)
+            enriched_order["_deadline_state"] = deadline_state
+            unexpired.append((enriched_order, order_matches))
+            source = deadline_state["deadline_source"]
+            if source in deadline_summary:
+                deadline_summary[source] += 1
 
     return {
         "now": now,
@@ -506,6 +648,7 @@ def build_current_context(cursor):
         "alias_map": alias_map,
         "profiles": profiles,
         "unexpired": unexpired,
+        "deadline_summary": deadline_summary,
     }
 
 

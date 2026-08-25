@@ -22,6 +22,7 @@ if BASE_DIR not in sys.path:
     )
 
 
+from common.match_utils import parse_match_name
 from database.mysql import get_conn
 from spider.caizhanyun_detail import get_detail
 
@@ -1012,23 +1013,18 @@ def save_match(
     )
 
 
-    teams = team.split(
-        ":",
-        1
-    )
+    parsed_match = parse_match_name(team)
 
 
     home_team = (
-        teams[0]
-        if teams
-        else ""
+        parsed_match["home_team"]
+        or ""
     )
 
 
     away_team = (
-        teams[1]
-        if len(teams) > 1
-        else ""
+        parsed_match["away_team"]
+        or ""
     )
 
 

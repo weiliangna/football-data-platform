@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -20,6 +21,39 @@ if ROOT not in sys.path:
 from database.mysql import get_conn
 
 
+JWT_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){1,2}",
+    re.IGNORECASE,
+)
+AUTHORIZATION_PATTERN = re.compile(
+    r"(\bAuthorization\b\s*[:=]\s*)(?:Bearer\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,]+)",
+    re.IGNORECASE,
+)
+COOKIE_PATTERN = re.compile(
+    r"(\bCookie\b\s*[:=]\s*)[^\r\n]*",
+    re.IGNORECASE,
+)
+ASSIGNMENT_PATTERN = re.compile(
+    r"(\b(?:[A-Za-z0-9_]*(?:token|password|passwd|secret)[A-Za-z0-9_]*)\b\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)",
+    re.IGNORECASE,
+)
+BEARER_PATTERN = re.compile(
+    r"(\bBearer\s+)[A-Za-z0-9._~+/-]+",
+    re.IGNORECASE,
+)
+
+
+def redact_sensitive_text(value):
+    text = "" if value is None else str(value)
+    text = JWT_PATTERN.sub("[REDACTED_JWT]", text)
+    text = AUTHORIZATION_PATTERN.sub(r"\1[REDACTED]", text)
+    text = COOKIE_PATTERN.sub(r"\1[REDACTED]", text)
+    text = ASSIGNMENT_PATTERN.sub(r"\1[REDACTED]", text)
+    text = BEARER_PATTERN.sub(r"\1[REDACTED]", text)
+    return text
+
+
 def job_enabled(platform_id, name):
     if platform_id <= 0:
         return True
@@ -37,7 +71,7 @@ def job_enabled(platform_id, name):
             WHERE platform_id=%s
             LIMIT 1
             """,
-            (platform_id,)
+            (platform_id,),
         )
         row = cursor.fetchone()
         if not row:
@@ -60,6 +94,7 @@ def job_enabled(platform_id, name):
 def write_log(platform_id, name, started, finished, status, exit_code, message):
     conn = None
     cursor = None
+
     try:
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
@@ -76,8 +111,8 @@ def write_log(platform_id, name, started, finished, status, exit_code, message):
                 finished,
                 status,
                 exit_code,
-                message[-8000:] if message else ""
-            )
+                redact_sensitive_text(message)[-8000:],
+            ),
         )
         conn.commit()
     finally:
@@ -107,27 +142,33 @@ def main():
             datetime.now(),
             "skipped",
             0,
-            message
+            message,
         )
         return
 
     command = [sys.executable, "-m", args.module] + list(args.args)
-    print("执行任务:", " ".join(command))
+    print(
+        "执行任务:",
+        redact_sensitive_text(" ".join(command)),
+    )
 
     result = subprocess.run(
         command,
         cwd=ROOT,
         capture_output=True,
-        text=True
+        text=True,
     )
 
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
+    safe_stdout = redact_sensitive_text(result.stdout)
+    safe_stderr = redact_sensitive_text(result.stderr)
+
+    if safe_stdout:
+        print(safe_stdout, end="")
+    if safe_stderr:
+        print(safe_stderr, end="", file=sys.stderr)
 
     status = "success" if result.returncode == 0 else "failed"
-    message = result.stderr or result.stdout or ""
+    message = safe_stderr or safe_stdout or ""
 
     write_log(
         args.platform_id,
@@ -136,7 +177,7 @@ def main():
         datetime.now(),
         status,
         result.returncode,
-        message
+        message,
     )
 
     raise SystemExit(result.returncode)
