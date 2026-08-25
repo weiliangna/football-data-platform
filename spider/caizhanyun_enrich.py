@@ -20,6 +20,12 @@ if BASE_DIR not in sys.path:
     )
 
 
+from common.match_identity import (
+    build_match_identity,
+    load_team_aliases,
+    supports_identity_v2,
+    table_columns,
+)
 from common.match_utils import parse_match_name
 from common.platform_field_mapping import (
     database_datetime,
@@ -291,7 +297,6 @@ def build_match_maps(matches):
         teams[
             team_id
         ] = meta
-
 
         if day:
 
@@ -996,76 +1001,132 @@ def build_selection_text(
 
 def save_match(
     cursor,
-    item
+    item,
+    alias_map=None,
+    identity_v2=False,
 ):
-
     match_id = str(
-        item.get(
-            "matchId"
-        )
+        item.get("matchId")
         or ""
     ).strip()
-
 
     if not match_id:
         return
 
-
-    team = str(
-        item.get(
-            "team"
-        )
-        or ""
-    )
-
-
+    team = str(item.get("team") or "")
     parsed_match = parse_match_name(team)
-
-
-    home_team = (
-        parsed_match["home_team"]
-        or ""
+    home_team = parsed_match["home_team"] or ""
+    away_team = parsed_match["away_team"] or ""
+    league = item.get("league")
+    match_time = parse_match_time(item)
+    identity = build_match_identity(
+        PLATFORM_ID,
+        match_date=item.get("day"),
+        source_match_code=match_id,
+        match_name=team,
+        home_team=home_team,
+        away_team=away_team,
+        alias_map=alias_map,
     )
 
-
-    away_team = (
-        parsed_match["away_team"]
-        or ""
-    )
-
-
-    league = (
-        item.get(
-            "league"
-        )
-    )
-
-
-    match_time = (
-        parse_match_time(
-            item
-        )
-    )
-
-
-    if item.get(
-        "cancel"
-    ):
-
+    if item.get("cancel"):
         status = "取消"
-
-
-    elif item.get(
-        "result"
-    ):
-
+    elif item.get("result"):
         status = "已结束"
-
-
     else:
-
         status = "未结束"
 
+    if identity_v2:
+        cursor.execute(
+            """
+            SELECT id
+            FROM matches
+            WHERE platform_id=%s
+              AND match_date=%s
+              AND match_id=%s
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (
+                PLATFORM_ID,
+                identity["match_date"],
+                match_id,
+            ),
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute(
+                """
+                UPDATE matches
+                SET
+                    platform_id=%s,
+                    match_date=%s,
+                    normalized_home=%s,
+                    normalized_away=%s,
+                    match_identity=%s,
+                    identity_quality=%s,
+                    league=%s,
+                    home_team=%s,
+                    away_team=%s,
+                    match_time=COALESCE(%s,match_time),
+                    status=%s
+                WHERE id=%s
+                """,
+                (
+                    PLATFORM_ID,
+                    identity["match_date"],
+                    identity["normalized_home"],
+                    identity["normalized_away"],
+                    identity["match_identity"],
+                    identity["identity_quality"],
+                    league,
+                    home_team,
+                    away_team,
+                    match_time,
+                    status,
+                    existing["id"],
+                ),
+            )
+            return
+
+        cursor.execute(
+            """
+            INSERT INTO matches
+            (
+                platform_id,
+                match_id,
+                match_date,
+                normalized_home,
+                normalized_away,
+                match_identity,
+                identity_quality,
+                league,
+                home_team,
+                away_team,
+                match_time,
+                status
+            )
+            VALUES
+            (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                PLATFORM_ID,
+                match_id,
+                identity["match_date"],
+                identity["normalized_home"],
+                identity["normalized_away"],
+                identity["match_identity"],
+                identity["identity_quality"],
+                league,
+                home_team,
+                away_team,
+                match_time,
+                status,
+            ),
+        )
+        return
 
     cursor.execute(
         """
@@ -1078,36 +1139,14 @@ def save_match(
             match_time,
             status
         )
-
         VALUES
-        (
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s
-        )
-
+        (%s,%s,%s,%s,%s,%s)
         ON DUPLICATE KEY UPDATE
-
-            league =
-                VALUES(league),
-
-            home_team =
-                VALUES(home_team),
-
-            away_team =
-                VALUES(away_team),
-
-            match_time =
-                COALESCE(
-                    VALUES(match_time),
-                    match_time
-                ),
-
-            status =
-                VALUES(status)
+            league=VALUES(league),
+            home_team=VALUES(home_team),
+            away_team=VALUES(away_team),
+            match_time=COALESCE(VALUES(match_time),match_time),
+            status=VALUES(status)
         """,
         (
             match_id,
@@ -1115,10 +1154,9 @@ def save_match(
             home_team,
             away_team,
             match_time,
-            status
-        )
+            status,
+        ),
     )
-
 
 def save_user_avatar(
     cursor,
@@ -1214,7 +1252,9 @@ def check_columns(cursor):
 def enrich_order(
     cursor,
     order,
-    write=False
+    write=False,
+    alias_map=None,
+    matches_identity_v2=False,
 ):
 
     order_id = (
@@ -1702,7 +1742,9 @@ def enrich_order(
 
         save_match(
             cursor,
-            item
+            item,
+            alias_map=alias_map,
+            identity_v2=matches_identity_v2,
         )
 
 
@@ -1733,7 +1775,6 @@ def main():
         description=
         "彩站云订单详情JS规则解码"
     )
-
 
     parser.add_argument(
         "--id",
@@ -1767,6 +1808,14 @@ def main():
 
 
     try:
+        alias_map = load_team_aliases(cursor)
+        match_columns = table_columns(
+            cursor,
+            "matches",
+        )
+        matches_identity_v2 = supports_identity_v2(
+            match_columns
+        )
 
         if args.write:
 
@@ -1858,7 +1907,9 @@ def main():
             if enrich_order(
                 cursor,
                 order,
-                write=args.write
+                write=args.write,
+                alias_map=alias_map,
+                matches_identity_v2=matches_identity_v2,
             ):
 
                 success += 1

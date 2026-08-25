@@ -39,9 +39,11 @@ config/*cookie*.json
 id_rsa
 id_ed25519
 
-# Database dumps
+# Database dumps and local database files
 *.sql
 !database/schema/football_data_schema.sql
+!database/migrations/
+!database/migrations/*.sql
 *.sql.gz
 *.dump
 *.dump.gz

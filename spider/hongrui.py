@@ -21,6 +21,12 @@ if ROOT not in sys.path:
     )
 
 
+from common.match_identity import (
+    build_match_identity,
+    load_team_aliases,
+    supports_identity_v2,
+    table_columns,
+)
 from common.platform_field_mapping import (
     extract_hongrui_source_fields,
     resolve_hongrui_handicap,
@@ -333,7 +339,8 @@ def normalize_option(
 # ============================================================
 
 def parse_detail(
-    raw
+    raw,
+    alias_map=None,
 ):
 
     data = (
@@ -523,6 +530,14 @@ def parse_detail(
             market,
             handicap
         ), group in grouped.items():
+            identity = build_match_identity(
+                PLATFORM_ID,
+                source_match_code=week_name,
+                match_name=match_name,
+                home_team=home,
+                away_team=away,
+                alias_map=alias_map,
+            )
 
             matches.append({
 
@@ -569,8 +584,26 @@ def parse_detail(
                 "identity_candidate":
                     week_name,
 
+                "match_identity":
+                    identity["match_identity"],
+
                 "identity_complete":
-                    False
+                    False,
+
+                "match_date":
+                    None,
+
+                "match_key":
+                    identity["match_key"],
+
+                "normalized_home":
+                    identity["normalized_home"],
+
+                "normalized_away":
+                    identity["normalized_away"],
+
+                "identity_quality":
+                    "incomplete"
             })
 
 
@@ -705,7 +738,8 @@ def preview_order(
 ):
 
     parsed = parse_detail(
-        raw_detail
+        raw_detail,
+        alias_map=alias_map,
     )
 
 
@@ -865,8 +899,6 @@ def preview_order(
                 "week_name"
             ]
         )
-
-
         print(
             "比赛:",
             item[
@@ -956,7 +988,9 @@ def save_user_avatar(
 def save_order(
     cursor,
     list_item,
-    raw_detail
+    raw_detail,
+    alias_map=None,
+    identity_v2=False,
 ):
 
     parsed = parse_detail(
@@ -1433,152 +1467,188 @@ def save_order(
     # ========================================================
     # 拆单
     #
-    # 不再 DELETE 重建
-    #
-    # 已有拆单：
-    # 只更新比赛信息 / 赔率 / 选择
-    # 保留现有 result
-    #
-    # 新拆单：
-    # 插入待开奖
+    # 不再 DELETE 重建；已有 result/profit 保持不变。
+    # 鸿瑞没有已验证比赛日期，因此 identity_quality 保持
+    # incomplete，match_date 保持 NULL，不能建立唯一约束。
     # ========================================================
 
     for item in matches:
-
         option_text = "/".join(
-            item.get(
-                "options"
-            )
+            item.get("options")
             or []
         )
-
-
         option_json = json.dumps(
-            item.get(
-                "option_detail"
-            )
+            item.get("option_detail")
             or [],
             ensure_ascii=False
         )
 
-
-        cursor.execute(
-            """
-            SELECT
-
-                id,
-
-                result
-
-            FROM order_matches
-
-            WHERE
-
-                order_id=%s
-
-                AND match_name=%s
-
-                AND play_type=%s
-
-                AND handicap=%s
-
-            ORDER BY id ASC
-
-            LIMIT 1
-            """,
-            (
-                local_order_id,
-
-                item.get(
-                    "match_name"
-                ),
-
-                item.get(
-                    "market"
-                ),
-
-                item.get(
-                    "handicap"
-                )
-                or 0
-            )
-        )
-
-
-        old_match = cursor.fetchone()
-
-
-        if old_match:
-
+        if identity_v2:
             cursor.execute(
                 """
-                UPDATE order_matches
-
-                SET
-
-                    match_code=%s,
-
-                    league=%s,
-
-                    selection=%s,
-
-                    option_detail=%s,
-
-                    handicap=%s
-
-                WHERE id=%s
+                SELECT id,result
+                FROM order_matches
+                WHERE order_id=%s
+                  AND platform_id=%s
+                  AND match_date IS NULL
+                  AND match_code=%s
+                  AND match_key=%s
+                  AND play_type=%s
+                  AND handicap=%s
+                ORDER BY id ASC
+                LIMIT 1
                 """,
                 (
-                    item.get(
-                        "week_name"
-                    )
-                    or "",
-
-                    league,
-
-                    option_text,
-
-                    option_json,
-
-                    item.get(
-                        "handicap"
-                    )
-                    or 0,
-
-                    old_match[
-                        "id"
-                    ]
-                )
+                    local_order_id,
+                    PLATFORM_ID,
+                    item.get("week_name") or "",
+                    item.get("match_key") or "",
+                    item.get("market"),
+                    item.get("handicap") or 0,
+                ),
             )
-
-
+            old_match = cursor.fetchone()
         else:
+            cursor.execute(
+                """
+                SELECT id,result
+                FROM order_matches
+                WHERE order_id=%s
+                  AND match_name=%s
+                  AND play_type=%s
+                  AND handicap=%s
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (
+                    local_order_id,
+                    item.get("match_name"),
+                    item.get("market"),
+                    item.get("handicap") or 0,
+                ),
+            )
+            old_match = cursor.fetchone()
 
+        if old_match:
+            if identity_v2:
+                cursor.execute(
+                    """
+                    UPDATE order_matches
+                    SET
+                        platform_id=%s,
+                        match_code=%s,
+                        match_key=%s,
+                        match_date=NULL,
+                        normalized_home=%s,
+                        normalized_away=%s,
+                        match_identity=%s,
+                        identity_quality='incomplete',
+                        league=%s,
+                        selection=%s,
+                        option_detail=%s,
+                        handicap=%s
+                    WHERE id=%s
+                    """,
+                    (
+                        PLATFORM_ID,
+                        item.get("week_name") or "",
+                        item.get("match_key") or "",
+                        item.get("normalized_home") or "",
+                        item.get("normalized_away") or "",
+                        item.get("match_identity") or "",
+                        league,
+                        option_text,
+                        option_json,
+                        item.get("handicap") or 0,
+                        old_match["id"],
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE order_matches
+                    SET
+                        match_code=%s,
+                        league=%s,
+                        selection=%s,
+                        option_detail=%s,
+                        handicap=%s
+                    WHERE id=%s
+                    """,
+                    (
+                        item.get("week_name") or "",
+                        league,
+                        option_text,
+                        option_json,
+                        item.get("handicap") or 0,
+                        old_match["id"],
+                    ),
+                )
+            continue
+
+        if identity_v2:
             cursor.execute(
                 """
                 INSERT INTO order_matches
                 (
                     order_id,
-
+                    platform_id,
                     match_code,
-
                     match_name,
-
+                    match_key,
+                    match_date,
+                    normalized_home,
+                    normalized_away,
+                    match_identity,
+                    identity_quality,
                     league,
-
                     play_type,
-
                     selection,
-
                     option_detail,
-
                     handicap,
-
                     result,
-
                     profit
                 )
-
+                VALUES
+                (
+                    %s,%s,%s,%s,%s,NULL,%s,%s,%s,'incomplete',
+                    %s,%s,%s,%s,%s,
+                    '待开奖',
+                    0
+                )
+                """,
+                (
+                    local_order_id,
+                    PLATFORM_ID,
+                    item.get("week_name") or "",
+                    item.get("match_name"),
+                    item.get("match_key") or "",
+                    item.get("normalized_home") or "",
+                    item.get("normalized_away") or "",
+                    item.get("match_identity") or "",
+                    league,
+                    item.get("market"),
+                    option_text,
+                    option_json,
+                    item.get("handicap") or 0,
+                ),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO order_matches
+                (
+                    order_id,
+                    match_code,
+                    match_name,
+                    league,
+                    play_type,
+                    selection,
+                    option_detail,
+                    handicap,
+                    result,
+                    profit
+                )
                 VALUES
                 (
                     %s,%s,%s,%s,%s,%s,%s,%s,
@@ -1588,31 +1658,14 @@ def save_order(
                 """,
                 (
                     local_order_id,
-
-                    item.get(
-                        "week_name"
-                    )
-                    or "",
-
-                    item.get(
-                        "match_name"
-                    ),
-
+                    item.get("week_name") or "",
+                    item.get("match_name"),
                     league,
-
-                    item.get(
-                        "market"
-                    ),
-
+                    item.get("market"),
                     option_text,
-
                     option_json,
-
-                    item.get(
-                        "handicap"
-                    )
-                    or 0
-                )
+                    item.get("handicap") or 0,
+                ),
             )
 
 
@@ -1706,9 +1759,9 @@ def main():
 
 
     conn = None
-
     cursor = None
-
+    alias_map = {}
+    identity_v2 = False
 
     try:
 
@@ -1719,6 +1772,10 @@ def main():
 
             cursor = conn.cursor(
                 pymysql.cursors.DictCursor
+            )
+            alias_map = load_team_aliases(cursor)
+            identity_v2 = supports_identity_v2(
+                table_columns(cursor, "order_matches")
             )
 
 
@@ -1752,7 +1809,9 @@ def main():
                     save_order(
                         cursor,
                         list_item,
-                        detail
+                        detail,
+                        alias_map=alias_map,
+                        identity_v2=identity_v2,
                     )
 
 

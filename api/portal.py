@@ -1,11 +1,18 @@
 import re
-import unicodedata
 from collections import defaultdict
 from datetime import datetime, timedelta
 
 import pymysql
 from fastapi import APIRouter
 
+from common.match_identity import (
+    canonical_match,
+    canonical_team,
+    load_team_aliases,
+    normalize_identity_text,
+    supports_identity_v2,
+    table_columns,
+)
 from common.match_utils import parse_match_name
 from database.mysql import get_conn
 
@@ -46,10 +53,7 @@ def intv(value):
 
 
 def normalize_text(value):
-    text = unicodedata.normalize("NFKC", str(value or "")).strip()
-    return re.sub(r"\s+", "", text)
-
-
+    return normalize_identity_text(value)
 
 def split_match_name(value):
     parsed = parse_match_name(value)
@@ -96,77 +100,11 @@ def parse_datetime(value):
     return None
 
 
-def table_columns(cursor, table_name):
-    cursor.execute(
-        """
-        SELECT COLUMN_NAME
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s
-        """,
-        (table_name,)
-    )
-    return {row["COLUMN_NAME"] for row in cursor.fetchall()}
-
-
 def load_aliases(cursor):
-    alias_map = {}
     try:
-        cursor.execute(
-            """
-            SELECT platform_id,canonical_name,alias_name
-            FROM team_aliases
-            """
-        )
-        for row in cursor.fetchall():
-            pid = intv(row.get("platform_id"))
-            alias = normalize_text(row.get("alias_name")).lower()
-            canonical = str(row.get("canonical_name") or "").strip()
-            if alias and canonical:
-                alias_map[(pid, alias)] = canonical
-                if pid == 0:
-                    alias_map[(-1, alias)] = canonical
+        return load_team_aliases(cursor)
     except Exception:
-        pass
-    return alias_map
-
-
-def canonical_team(alias_map, platform_id, team):
-    team = str(team or "").strip()
-    if not team:
-        return ""
-    key = normalize_text(team).lower()
-    return (
-        alias_map.get((intv(platform_id), key))
-        or alias_map.get((0, key))
-        or alias_map.get((-1, key))
-        or team
-    )
-
-
-def canonical_match(alias_map, platform_id, match_name):
-    home, away = split_match_name(match_name)
-    home = canonical_team(alias_map, platform_id, home)
-    away = canonical_team(alias_map, platform_id, away)
-
-    if home and away:
-        return {
-            "home": home,
-            "away": away,
-            "display": f"{home} VS {away}",
-            "key": (
-                normalize_text(home).lower()
-                + "|"
-                + normalize_text(away).lower()
-            ),
-        }
-
-    return {
-        "home": home,
-        "away": away,
-        "display": home or str(match_name or ""),
-        "key": normalize_text(match_name).lower(),
-    }
-
+        return {}
 
 def load_profiles(cursor):
     result = {}
@@ -269,6 +207,7 @@ def load_match_schedule(cursor):
             ),
             None,
         )
+        identity_v2 = supports_identity_v2(columns)
 
         select_fields = [
             (
@@ -301,6 +240,31 @@ def load_match_schedule(cursor):
                 if away_col
                 else "'' AS away_team"
             ),
+            (
+                "platform_id"
+                if identity_v2
+                else "NULL AS platform_id"
+            ),
+            (
+                "match_date"
+                if identity_v2
+                else "NULL AS match_date"
+            ),
+            (
+                "match_identity"
+                if identity_v2
+                else "NULL AS match_identity"
+            ),
+            (
+                "normalized_home"
+                if identity_v2
+                else "NULL AS normalized_home"
+            ),
+            (
+                "normalized_away"
+                if identity_v2
+                else "NULL AS normalized_away"
+            ),
         ]
         order_col = exact_col or proxy_col
 
@@ -332,14 +296,68 @@ def load_match_schedule(cursor):
             else:
                 continue
 
+            platform_id = intv(row.get("platform_id"))
+            match_date = row.get("match_date")
+            date_text = (
+                str(match_date)
+                if match_date not in (None, "")
+                else ""
+            )
             code = normalize_text(row.get("match_code"))
+            identity = str(
+                row.get("match_identity")
+                or ""
+            ).strip()
+            normalized_home = normalize_text(
+                row.get("normalized_home")
+                or row.get("home_team")
+            )
+            normalized_away = normalize_text(
+                row.get("normalized_away")
+                or row.get("away_team")
+            )
             raw_name = row.get("match_name") or ""
+
             if not raw_name:
-                home_team = str(row.get("home_team") or "").strip()
-                away_team = str(row.get("away_team") or "").strip()
+                home_team = str(
+                    row.get("home_team")
+                    or ""
+                ).strip()
+                away_team = str(
+                    row.get("away_team")
+                    or ""
+                ).strip()
                 if home_team and away_team:
                     raw_name = f"{home_team}:{away_team}"
-            name = normalize_text(raw_name).lower()
+
+            name = normalize_text(raw_name)
+
+            if identity:
+                by_code[("identity", identity)] = deadline
+            if platform_id and date_text and code:
+                by_code[
+                    (
+                        "code",
+                        platform_id,
+                        date_text,
+                        code,
+                    )
+                ] = deadline
+            if (
+                platform_id
+                and date_text
+                and normalized_home
+                and normalized_away
+            ):
+                by_name[
+                    (
+                        "teams",
+                        platform_id,
+                        date_text,
+                        normalized_home,
+                        normalized_away,
+                    )
+                ] = deadline
 
             if code:
                 by_code[code] = deadline
@@ -350,7 +368,6 @@ def load_match_schedule(cursor):
         pass
 
     return by_code, by_name
-
 
 def load_orders_for_day(cursor, target_day, pending_only=False):
     day_start = datetime.combine(
@@ -387,12 +404,115 @@ def load_order_matches(cursor, order_ids):
         return grouped
 
     placeholders = ",".join(["%s" for _ in order_ids])
+    order_columns = table_columns(
+        cursor,
+        "order_matches",
+    )
+    result_columns = table_columns(
+        cursor,
+        "match_results",
+    )
+    identity_v2 = (
+        supports_identity_v2(order_columns)
+        and supports_identity_v2(result_columns)
+    )
+
+    if identity_v2:
+        join_sql = """
+        LEFT JOIN match_results mr
+            ON mr.id=
+            (
+                SELECT mr2.id
+                FROM match_results mr2
+                WHERE
+                    (
+                        om.platform_id IS NOT NULL
+                        AND om.match_date IS NOT NULL
+                        AND om.match_code IS NOT NULL
+                        AND om.match_code<>''
+                        AND mr2.platform_id=om.platform_id
+                        AND mr2.match_date=om.match_date
+                        AND mr2.match_code=om.match_code
+                    )
+                    OR
+                    (
+                        om.platform_id IS NOT NULL
+                        AND om.match_date IS NOT NULL
+                        AND om.match_key IS NOT NULL
+                        AND om.match_key<>''
+                        AND mr2.platform_id=om.platform_id
+                        AND mr2.match_date=om.match_date
+                        AND mr2.match_key=om.match_key
+                    )
+                    OR
+                    (
+                        mr2.match_name=om.match_name
+                        AND (
+                            mr2.platform_id IS NULL
+                            OR om.platform_id IS NULL
+                            OR mr2.platform_id=om.platform_id
+                        )
+                        AND (
+                            mr2.match_date IS NULL
+                            OR om.match_date IS NULL
+                            OR mr2.platform_id IS NULL
+                            OR om.platform_id IS NULL
+                        )
+                    )
+                ORDER BY
+                    CASE
+                        WHEN om.platform_id IS NOT NULL
+                         AND om.match_date IS NOT NULL
+                         AND om.match_code IS NOT NULL
+                         AND om.match_code<>''
+                         AND mr2.platform_id=om.platform_id
+                         AND mr2.match_date=om.match_date
+                         AND mr2.match_code=om.match_code
+                        THEN 1
+                        WHEN om.platform_id IS NOT NULL
+                         AND om.match_date IS NOT NULL
+                         AND om.match_key IS NOT NULL
+                         AND om.match_key<>''
+                         AND mr2.platform_id=om.platform_id
+                         AND mr2.match_date=om.match_date
+                         AND mr2.match_key=om.match_key
+                        THEN 2
+                        ELSE 3
+                    END,
+                    mr2.id DESC
+                LIMIT 1
+            )
+        """
+        identity_fields = """
+            om.platform_id,
+            om.match_date,
+            om.match_key,
+            om.normalized_home,
+            om.normalized_away,
+            om.match_identity,
+            om.identity_quality,
+        """
+    else:
+        join_sql = """
+        LEFT JOIN match_results mr
+            ON mr.match_name=om.match_name
+        """
+        identity_fields = """
+            o.platform_id,
+            NULL AS match_date,
+            om.match_key,
+            NULL AS normalized_home,
+            NULL AS normalized_away,
+            NULL AS match_identity,
+            'legacy' AS identity_quality,
+        """
 
     cursor.execute(
         f"""
         SELECT
             om.id,
             om.order_id,
+            {identity_fields}
             om.match_code,
             om.match_name,
             om.league,
@@ -408,8 +528,8 @@ def load_order_matches(cursor, order_ids):
             mr.half_away_score,
             mr.status AS match_status
         FROM order_matches om
-        LEFT JOIN match_results mr
-            ON mr.match_name=om.match_name
+        INNER JOIN orders o ON o.id=om.order_id
+        {join_sql}
         WHERE om.order_id IN ({placeholders})
         ORDER BY om.order_id DESC,om.id ASC
         """,
@@ -421,9 +541,11 @@ def load_order_matches(cursor, order_ids):
 
     return grouped
 
-
-
-def match_deadline(match_row, schedule_by_code, schedule_by_name):
+def match_deadline(
+    match_row,
+    schedule_by_code,
+    schedule_by_name,
+):
     direct = parse_datetime(match_row.get("deadline_time"))
     if direct:
         return {
@@ -432,16 +554,66 @@ def match_deadline(match_row, schedule_by_code, schedule_by_name):
             "deadline_exact": True,
         }
 
+    identity = str(
+        match_row.get("match_identity")
+        or ""
+    ).strip()
+    if (
+        identity
+        and ("identity", identity) in schedule_by_code
+    ):
+        return schedule_by_code[("identity", identity)]
+
+    platform_id = intv(match_row.get("platform_id"))
+    match_date = match_row.get("match_date")
+    date_text = (
+        str(match_date)
+        if match_date not in (None, "")
+        else ""
+    )
     code = normalize_text(match_row.get("match_code"))
+
+    if platform_id and date_text and code:
+        key = (
+            "code",
+            platform_id,
+            date_text,
+            code,
+        )
+        if key in schedule_by_code:
+            return schedule_by_code[key]
+
+    normalized_home = normalize_text(
+        match_row.get("normalized_home")
+    )
+    normalized_away = normalize_text(
+        match_row.get("normalized_away")
+    )
+
+    if (
+        platform_id
+        and date_text
+        and normalized_home
+        and normalized_away
+    ):
+        key = (
+            "teams",
+            platform_id,
+            date_text,
+            normalized_home,
+            normalized_away,
+        )
+        if key in schedule_by_name:
+            return schedule_by_name[key]
+
     if code and code in schedule_by_code:
         return schedule_by_code[code]
 
-    name = normalize_text(match_row.get("match_name")).lower()
+    name = normalize_text(match_row.get("match_name"))
     if name and name in schedule_by_name:
         return schedule_by_name[name]
 
     return None
-
 
 def resolve_order_deadline(
     order,
@@ -498,16 +670,75 @@ def is_order_unexpired(
     )["unexpired"]
 
 
+def portal_match_group_key(row, platform_id=None):
+    identity = str(
+        row.get("match_identity")
+        or ""
+    ).strip()
+    if identity:
+        return f"identity:{identity}"
+
+    platform = intv(
+        row.get("platform_id")
+        or platform_id
+    )
+    match_date = row.get("match_date")
+    match_key = str(row.get("match_key") or "").strip()
+    match_code = str(
+        row.get("match_code")
+        or ""
+    ).strip()
+
+    if platform and match_date and match_key:
+        return (
+            f"date_teams:{platform}|{match_date}|"
+            f"{match_key}"
+        )
+
+    if platform and match_code and match_key:
+        return (
+            f"incomplete:{platform}|{match_code}|"
+            f"{match_key}"
+        )
+
+    return (
+        f"legacy:{platform}|"
+        f"{row.get('match_name') or ''}"
+    )
+
+
 def format_match_row(row, alias_map, platform_id):
     match = canonical_match(
         alias_map,
         platform_id,
-        row.get("match_name")
+        row.get("match_name"),
     )
 
     return {
         "id": intv(row.get("id")),
+        "platform_id": intv(
+            row.get("platform_id")
+            or platform_id
+        ),
         "match_code": row.get("match_code") or "",
+        "match_date": row.get("match_date"),
+        "match_key": (
+            row.get("match_key")
+            or match["match_key"]
+        ),
+        "match_identity": row.get("match_identity") or "",
+        "identity_quality": (
+            row.get("identity_quality")
+            or "legacy"
+        ),
+        "normalized_home": (
+            row.get("normalized_home")
+            or match["normalized_home"]
+        ),
+        "normalized_away": (
+            row.get("normalized_away")
+            or match["normalized_away"]
+        ),
         "home": match["home"],
         "away": match["away"],
         "match_name": match["display"],
@@ -521,7 +752,9 @@ def format_match_row(row, alias_map, platform_id):
         "away_score": row.get("away_score"),
         "half_home_score": row.get("half_home_score"),
         "half_away_score": row.get("half_away_score"),
-        "deadline_time": parse_datetime(row.get("deadline_time")),
+        "deadline_time": parse_datetime(
+            row.get("deadline_time")
+        ),
         "deadline_source": (
             "deadline"
             if parse_datetime(row.get("deadline_time"))
@@ -531,7 +764,6 @@ def format_match_row(row, alias_map, platform_id):
             parse_datetime(row.get("deadline_time"))
         ),
     }
-
 
 def enrich_order(order, matches, alias_map, profiles):
     platform_id = intv(order.get("platform_id"))
@@ -1071,14 +1303,19 @@ def aggregate_heatmap(ctx, play_type):
                 platform_id
             )
 
-            key = (
-                formatted["match_code"]
-                or formatted["match_name"]
+            key = portal_match_group_key(
+                formatted,
+                platform_id,
             )
 
             if key not in match_groups:
                 match_groups[key] = {
+                    "platform_id": formatted["platform_id"],
                     "match_code": formatted["match_code"],
+                    "match_date": formatted["match_date"],
+                    "match_key": formatted["match_key"],
+                    "match_identity": formatted["match_identity"],
+                    "identity_quality": formatted["identity_quality"],
                     "home": formatted["home"],
                     "away": formatted["away"],
                     "match_name": formatted["match_name"],
@@ -1134,7 +1371,12 @@ def aggregate_heatmap(ctx, play_type):
 
         matches.append(
             {
+                "platform_id": group["platform_id"],
                 "match_code": group["match_code"],
+                "match_date": group["match_date"],
+                "match_key": group["match_key"],
+                "match_identity": group["match_identity"],
+                "identity_quality": group["identity_quality"],
                 "home": group["home"],
                 "away": group["away"],
                 "match_name": group["match_name"],
@@ -1272,13 +1514,23 @@ def analysis():
         for play, data in play_data.items():
             for row in data["matches"]:
                 key = (
-                    row["match_code"]
+                    row.get("match_identity")
+                    or (
+                        f"{row.get('platform_id')}|"
+                        f"{row.get('match_date')}|"
+                        f"{row.get('match_key')}"
+                    )
                     or row["match_name"]
                 )
 
                 if key not in match_map:
                     match_map[key] = {
+                        "platform_id": row.get("platform_id"),
                         "match_code": row["match_code"],
+                        "match_date": row.get("match_date"),
+                        "match_key": row.get("match_key"),
+                        "match_identity": row.get("match_identity"),
+                        "identity_quality": row.get("identity_quality"),
                         "match_name": row["match_name"],
                         "league": row["league"],
                         "plays": {},
@@ -1471,6 +1723,35 @@ def results(
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
         alias_map = load_aliases(cursor)
+        result_columns = table_columns(
+            cursor,
+            "match_results",
+        )
+        result_identity_v2 = supports_identity_v2(
+            result_columns
+        )
+        identity_fields = (
+            """
+                platform_id,
+                match_date,
+                match_key,
+                normalized_home,
+                normalized_away,
+                match_identity,
+                identity_quality,
+            """
+            if result_identity_v2
+            else
+            """
+                NULL AS platform_id,
+                NULL AS match_date,
+                match_key,
+                NULL AS normalized_home,
+                NULL AS normalized_away,
+                NULL AS match_identity,
+                'legacy' AS identity_quality,
+            """
+        )
 
         cursor.execute(
             """
@@ -1484,9 +1765,10 @@ def results(
         offset = (page - 1) * page_size
 
         cursor.execute(
-            """
+            f"""
             SELECT
                 id,
+                {identity_fields}
                 match_code,
                 match_name,
                 home_team,
@@ -1514,21 +1796,33 @@ def results(
                 row.get("match_name")
             )
 
+            platform_id = intv(row.get("platform_id"))
             home = canonical_team(
                 alias_map,
-                0,
+                platform_id,
                 row.get("home_team") or split_home
             )
             away = canonical_team(
                 alias_map,
-                0,
+                platform_id,
                 row.get("away_team") or split_away
             )
 
             rows.append(
                 {
                     "id": intv(row.get("id")),
+                    "platform_id": platform_id,
                     "match_code": row.get("match_code") or "",
+                    "match_date": row.get("match_date"),
+                    "match_key": row.get("match_key") or "",
+                    "match_identity": (
+                        row.get("match_identity")
+                        or ""
+                    ),
+                    "identity_quality": (
+                        row.get("identity_quality")
+                        or "legacy"
+                    ),
                     "home": home,
                     "away": away,
                     "match_name": (

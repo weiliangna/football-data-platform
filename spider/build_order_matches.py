@@ -3,7 +3,13 @@ import re
 
 import pymysql
 
-from common.match_utils import build_match_key, parse_match_name
+from common.match_identity import (
+    build_match_identity,
+    load_team_aliases,
+    supports_identity_v2,
+    table_columns,
+)
+from common.match_utils import parse_match_name
 from common.platform_field_mapping import (
     resolve_caizhanyun_handicap,
 )
@@ -40,19 +46,11 @@ def split_play(play_text):
     return "", text
 
 
-def standard_match_key(match_name):
-    parsed = parse_match_name(match_name)
-    return build_match_key(
-        home_team=parsed["home_team"],
-        away_team=parsed["away_team"],
-        match_name=match_name,
-    )
-
-
 def parse_selection_legs(
     selection,
     order_handicap=0,
     league="",
+    alias_map=None,
 ):
     legs = []
 
@@ -79,16 +77,27 @@ def parse_selection_legs(
             legacy_order_handicap=order_handicap,
             allow_legacy_fallback=True,
         )
+        identity = build_match_identity(
+            PLATFORM_ID,
+            match_name=match_name,
+            alias_map=alias_map,
+        )
 
         legs.append(
             {
+                "platform_id": PLATFORM_ID,
                 "match_code": "",
                 "match_name": match_name,
-                "match_key": build_match_key(
-                    home_team=parsed_match["home_team"],
-                    away_team=parsed_match["away_team"],
-                    match_name=match_name,
-                ),
+                "match_key": identity["match_key"],
+                "match_date": None,
+                "normalized_home": identity[
+                    "normalized_home"
+                ],
+                "normalized_away": identity[
+                    "normalized_away"
+                ],
+                "match_identity": "",
+                "identity_quality": "legacy",
                 "league": str(league or ""),
                 "play_type": play_type,
                 "selection": leg_selection,
@@ -112,7 +121,7 @@ def parse_selection_legs(
     return legs
 
 
-def build_structured_legs(decoded_items):
+def build_structured_legs(decoded_items, alias_map=None):
     legs = []
 
     for item in decoded_items or []:
@@ -153,16 +162,33 @@ def build_structured_legs(decoded_items):
             or item.get("matchId")
             or ""
         ).strip()
+        identity = build_match_identity(
+            PLATFORM_ID,
+            match_date=day,
+            source_match_code=match_id,
+            match_name=match_name,
+            alias_map=alias_map,
+        )
 
         legs.append(
             {
+                "platform_id": PLATFORM_ID,
                 "match_code": match_id,
                 "match_name": match_name,
-                # Settlement and result sync already join on the existing
-                # team-name match_key convention.  day/matchId is retained
-                # separately as a verified identity candidate so this path
-                # does not silently break those joins.
-                "match_key": standard_match_key(match_name),
+                "match_key": identity["match_key"],
+                "match_date": identity["match_date"],
+                "normalized_home": identity[
+                    "normalized_home"
+                ],
+                "normalized_away": identity[
+                    "normalized_away"
+                ],
+                "match_identity": identity[
+                    "match_identity"
+                ],
+                "identity_quality": identity[
+                    "identity_quality"
+                ],
                 "league": str(
                     item.get("league")
                     or ""
@@ -206,7 +232,6 @@ def build_structured_legs(decoded_items):
 
     return legs
 
-
 def decode_detail_items(detail_response):
     response = (
         detail_response
@@ -241,12 +266,14 @@ def choose_legs(
     detail_response=None,
     logger=print,
     allow_legacy_fallback=True,
+    alias_map=None,
 ):
     decoded_items = decode_detail_items(
         detail_response
     )
     structured = build_structured_legs(
-        decoded_items
+        decoded_items,
+        alias_map=alias_map,
     )
 
     if structured:
@@ -263,6 +290,7 @@ def choose_legs(
         order.get("selection"),
         order_handicap=order.get("handicap"),
         league=order.get("league"),
+        alias_map=alias_map,
     )
 
     for leg in legacy:
@@ -276,12 +304,80 @@ def choose_legs(
 
     return legacy
 
-
-def find_existing_leg(cursor, order_id, leg):
+def find_existing_leg(
+    cursor,
+    order_id,
+    leg,
+    identity_v2=False,
+):
     match_code = str(
         leg.get("match_code")
         or ""
     ).strip()
+
+    if (
+        identity_v2
+        and leg.get("platform_id") is not None
+        and leg.get("match_date") is not None
+        and match_code
+    ):
+        cursor.execute(
+            """
+            SELECT id,result
+            FROM order_matches
+            WHERE order_id=%s
+              AND platform_id=%s
+              AND match_date=%s
+              AND match_code=%s
+              AND play_type=%s
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (
+                order_id,
+                leg["platform_id"],
+                leg["match_date"],
+                match_code,
+                leg["play_type"],
+            ),
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            return existing
+
+    if (
+        identity_v2
+        and leg.get("platform_id") is not None
+        and leg.get("match_date") is not None
+        and leg.get("match_key")
+    ):
+        cursor.execute(
+            """
+            SELECT id,result
+            FROM order_matches
+            WHERE order_id=%s
+              AND platform_id=%s
+              AND match_date=%s
+              AND match_key=%s
+              AND play_type=%s
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (
+                order_id,
+                leg["platform_id"],
+                leg["match_date"],
+                leg["match_key"],
+                leg["play_type"],
+            ),
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            return existing
 
     if match_code:
         cursor.execute(
@@ -346,13 +442,14 @@ def find_existing_leg(cursor, order_id, leg):
     )
     return cursor.fetchone()
 
-
 def upsert_order_matches(
     cursor,
     order,
     detail_response=None,
     logger=print,
     allow_legacy_fallback=True,
+    alias_map=None,
+    identity_v2=False,
 ):
     order_id = int(order["id"])
     legs = choose_legs(
@@ -360,6 +457,7 @@ def upsert_order_matches(
         detail_response=detail_response,
         logger=logger,
         allow_legacy_fallback=allow_legacy_fallback,
+        alias_map=alias_map,
     )
     stats = {
         "order_id": order_id,
@@ -378,71 +476,157 @@ def upsert_order_matches(
             cursor,
             order_id,
             leg,
+            identity_v2=identity_v2,
         )
 
         if existing:
-            cursor.execute(
-                """
-                UPDATE order_matches
-                SET
-                    match_code=%s,
-                    match_key=%s,
-                    league=%s,
-                    selection=%s,
-                    handicap=%s
-                WHERE id=%s
-                """,
-                (
-                    leg["match_code"],
-                    leg["match_key"],
-                    leg["league"],
-                    leg["selection"],
-                    leg["handicap"],
-                    existing["id"],
-                ),
-            )
+            if identity_v2:
+                cursor.execute(
+                    """
+                    UPDATE order_matches
+                    SET
+                        platform_id=%s,
+                        match_code=%s,
+                        match_key=%s,
+                        match_date=%s,
+                        normalized_home=%s,
+                        normalized_away=%s,
+                        match_identity=%s,
+                        identity_quality=%s,
+                        league=%s,
+                        selection=%s,
+                        handicap=%s
+                    WHERE id=%s
+                    """,
+                    (
+                        leg["platform_id"],
+                        leg["match_code"],
+                        leg["match_key"],
+                        leg["match_date"],
+                        leg["normalized_home"],
+                        leg["normalized_away"],
+                        leg["match_identity"],
+                        leg["identity_quality"],
+                        leg["league"],
+                        leg["selection"],
+                        leg["handicap"],
+                        existing["id"],
+                    ),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE order_matches
+                    SET
+                        match_code=%s,
+                        match_key=%s,
+                        league=%s,
+                        selection=%s,
+                        handicap=%s
+                    WHERE id=%s
+                    """,
+                    (
+                        leg["match_code"],
+                        leg["match_key"],
+                        leg["league"],
+                        leg["selection"],
+                        leg["handicap"],
+                        existing["id"],
+                    ),
+                )
+
             stats["updated"] += 1
             continue
 
-        cursor.execute(
-            """
-            INSERT INTO order_matches
-            (
-                order_id,
-                match_code,
-                match_name,
-                match_key,
-                league,
-                play_type,
-                selection,
-                handicap,
-                deadline_time,
-                result,
-                profit
+        if identity_v2:
+            cursor.execute(
+                """
+                INSERT INTO order_matches
+                (
+                    order_id,
+                    platform_id,
+                    match_code,
+                    match_name,
+                    match_key,
+                    match_date,
+                    normalized_home,
+                    normalized_away,
+                    match_identity,
+                    identity_quality,
+                    league,
+                    play_type,
+                    selection,
+                    handicap,
+                    deadline_time,
+                    result,
+                    profit
+                )
+                VALUES
+                (
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,
+                    '待开奖',
+                    0
+                )
+                """,
+                (
+                    order_id,
+                    leg["platform_id"],
+                    leg["match_code"],
+                    leg["match_name"],
+                    leg["match_key"],
+                    leg["match_date"],
+                    leg["normalized_home"],
+                    leg["normalized_away"],
+                    leg["match_identity"],
+                    leg["identity_quality"],
+                    leg["league"],
+                    leg["play_type"],
+                    leg["selection"],
+                    leg["handicap"],
+                    leg["deadline_time"],
+                ),
             )
-            VALUES
-            (
-                %s,%s,%s,%s,%s,%s,%s,%s,%s,
-                '待开奖',
-                0
+        else:
+            cursor.execute(
+                """
+                INSERT INTO order_matches
+                (
+                    order_id,
+                    match_code,
+                    match_name,
+                    match_key,
+                    league,
+                    play_type,
+                    selection,
+                    handicap,
+                    deadline_time,
+                    result,
+                    profit
+                )
+                VALUES
+                (
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    '待开奖',
+                    0
+                )
+                """,
+                (
+                    order_id,
+                    leg["match_code"],
+                    leg["match_name"],
+                    leg["match_key"],
+                    leg["league"],
+                    leg["play_type"],
+                    leg["selection"],
+                    leg["handicap"],
+                    leg["deadline_time"],
+                ),
             )
-            """,
-            (
-                order_id,
-                leg["match_code"],
-                leg["match_name"],
-                leg["match_key"],
-                leg["league"],
-                leg["play_type"],
-                leg["selection"],
-                leg["handicap"],
-                leg["deadline_time"],
-            ),
-        )
+
         stats["inserted"] += 1
 
     return stats
-
 
 def load_orders(cursor, order_id=None):
     where = [

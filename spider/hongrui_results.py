@@ -18,6 +18,12 @@ if ROOT not in sys.path:
     )
 
 
+from common.match_identity import (
+    build_match_identity,
+    load_team_aliases,
+    supports_identity_v2,
+    table_columns,
+)
 from database.mysql import get_conn
 from spider.hongrui import get_follow_detail
 
@@ -451,129 +457,197 @@ def get_orders_to_check(
 
 def save_match_result(
     cursor,
-    item
+    item,
+    alias_map=None,
+    identity_v2=False,
 ):
+    identity = build_match_identity(
+        PLATFORM_ID,
+        source_match_code=item.get("week_name"),
+        match_name=item.get("match_name"),
+        home_team=item.get("home_team"),
+        away_team=item.get("away_team"),
+        alias_map=alias_map,
+    )
+
+    if identity_v2:
+        cursor.execute(
+            """
+            SELECT id
+            FROM match_results
+            WHERE platform_id=%s
+              AND match_date IS NULL
+              AND match_code=%s
+              AND match_key=%s
+            ORDER BY id ASC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (
+                PLATFORM_ID,
+                item.get("week_name") or "",
+                identity["match_key"],
+            ),
+        )
+        existing = cursor.fetchone()
+
+        if not existing:
+            cursor.execute(
+                """
+                SELECT id
+                FROM match_results
+                WHERE match_name=%s
+                  AND (platform_id IS NULL OR platform_id=%s)
+                ORDER BY
+                    CASE WHEN platform_id=%s THEN 0 ELSE 1 END,
+                    id ASC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (
+                    item["match_name"],
+                    PLATFORM_ID,
+                    PLATFORM_ID,
+                ),
+            )
+            existing = cursor.fetchone()
+
+        if existing:
+            cursor.execute(
+                """
+                UPDATE match_results
+                SET
+                    platform_id=%s,
+                    match_date=NULL,
+                    match_code=%s,
+                    match_key=%s,
+                    normalized_home=%s,
+                    normalized_away=%s,
+                    match_identity=%s,
+                    identity_quality='incomplete',
+                    league=%s,
+                    home_team=%s,
+                    away_team=%s,
+                    home_score=%s,
+                    away_score=%s,
+                    half_home_score=COALESCE(%s,half_home_score),
+                    half_away_score=COALESCE(%s,half_away_score),
+                    status='已结束',
+                    finished_time=COALESCE(finished_time,NOW())
+                WHERE id=%s
+                """,
+                (
+                    PLATFORM_ID,
+                    item.get("week_name") or "",
+                    identity["match_key"],
+                    identity["normalized_home"],
+                    identity["normalized_away"],
+                    identity["match_identity"],
+                    item["league"],
+                    item["home_team"],
+                    item["away_team"],
+                    item["home_score"],
+                    item["away_score"],
+                    item["half_home_score"],
+                    item["half_away_score"],
+                    existing["id"],
+                ),
+            )
+            return
+
+        cursor.execute(
+            """
+            INSERT INTO match_results
+            (
+                platform_id,
+                match_date,
+                match_code,
+                match_key,
+                normalized_home,
+                normalized_away,
+                match_identity,
+                identity_quality,
+                match_name,
+                league,
+                home_team,
+                away_team,
+                home_score,
+                away_score,
+                half_home_score,
+                half_away_score,
+                status,
+                finished_time
+            )
+            VALUES
+            (
+                %s,NULL,%s,%s,%s,%s,%s,'incomplete',
+                %s,%s,%s,%s,%s,%s,%s,%s,'已结束',NOW()
+            )
+            """,
+            (
+                PLATFORM_ID,
+                item.get("week_name") or "",
+                identity["match_key"],
+                identity["normalized_home"],
+                identity["normalized_away"],
+                identity["match_identity"],
+                item["match_name"],
+                item["league"],
+                item["home_team"],
+                item["away_team"],
+                item["home_score"],
+                item["away_score"],
+                item["half_home_score"],
+                item["half_away_score"],
+            ),
+        )
+        return
 
     cursor.execute(
         """
         INSERT INTO match_results
         (
             match_name,
-
             league,
-
             home_team,
-
             away_team,
-
             home_score,
-
             away_score,
-
             half_home_score,
-
             half_away_score,
-
             status,
-
             finished_time
         )
-
         VALUES
-        (
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            '已结束',
-            NOW()
-        )
-
+        (%s,%s,%s,%s,%s,%s,%s,%s,'已结束',NOW())
         ON DUPLICATE KEY UPDATE
-
-            league =
-                VALUES(league),
-
-            home_team =
-                VALUES(home_team),
-
-            away_team =
-                VALUES(away_team),
-
-            home_score =
-                VALUES(home_score),
-
-            away_score =
-                VALUES(away_score),
-
-            half_home_score =
-                COALESCE(
-                    VALUES(
-                        half_home_score
-                    ),
-                    half_home_score
-                ),
-
-            half_away_score =
-                COALESCE(
-                    VALUES(
-                        half_away_score
-                    ),
-                    half_away_score
-                ),
-
-            status =
-                '已结束',
-
-            finished_time =
-                COALESCE(
-                    finished_time,
-                    NOW()
-                )
+            league=VALUES(league),
+            home_team=VALUES(home_team),
+            away_team=VALUES(away_team),
+            home_score=VALUES(home_score),
+            away_score=VALUES(away_score),
+            half_home_score=COALESCE(
+                VALUES(half_home_score),
+                half_home_score
+            ),
+            half_away_score=COALESCE(
+                VALUES(half_away_score),
+                half_away_score
+            ),
+            status='已结束',
+            finished_time=COALESCE(finished_time,NOW())
         """,
         (
-            item[
-                "match_name"
-            ],
-
-            item[
-                "league"
-            ],
-
-            item[
-                "home_team"
-            ],
-
-            item[
-                "away_team"
-            ],
-
-            item[
-                "home_score"
-            ],
-
-            item[
-                "away_score"
-            ],
-
-            item[
-                "half_home_score"
-            ],
-
-            item[
-                "half_away_score"
-            ]
-        )
+            item["match_name"],
+            item["league"],
+            item["home_team"],
+            item["away_team"],
+            item["home_score"],
+            item["away_score"],
+            item["half_home_score"],
+            item["half_away_score"],
+        ),
     )
-
-
-# ============================================================
-# 同步鸿瑞平台实际派奖
-# ============================================================
 
 def sync_platform_settlement(
     cursor,
@@ -774,6 +848,10 @@ def main():
         cursor = conn.cursor(
             pymysql.cursors.DictCursor
         )
+        alias_map = load_team_aliases(cursor)
+        identity_v2 = supports_identity_v2(
+            table_columns(cursor, "match_results")
+        )
 
 
         orders = get_orders_to_check(
@@ -914,7 +992,9 @@ def main():
 
                     save_match_result(
                         cursor,
-                        item
+                        item,
+                        alias_map=alias_map,
+                        identity_v2=identity_v2,
                     )
 
 
