@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from config.caizhanyun_config import get_caizhanyun_config
 from tools.source_contract import (
     build_source_contract,
     redact_text,
@@ -123,12 +124,25 @@ def create_session(headers):
     return session
 
 
-def response_json(session, url, payload):
+
+def response_json(
+    session,
+    url,
+    payload,
+    headers=None,
+):
+    request_options = {
+        "json": payload,
+        "timeout": 20,
+    }
+
+    if headers:
+        request_options["headers"] = headers
+
     try:
         response = session.post(
             url,
-            json=payload,
-            timeout=20,
+            **request_options,
         )
         response.raise_for_status()
     except Exception as exc:
@@ -253,24 +267,36 @@ def select_orders(items, limit, score=None):
     ]
 
 
+
+def resolve_caizhanyun_config(config):
+    require_config(
+        config,
+        "CAIZHANYUN_TOKEN",
+    )
+    require_config(
+        config,
+        "CAIZHANYUN_COOKIE",
+    )
+    resolved = get_caizhanyun_config(config)
+
+    if not str(
+        resolved.get("store_id")
+        or ""
+    ).strip():
+        raise CaptureError(
+            "Unable to resolve 彩站云 storeId"
+        )
+
+    return resolved
+
+
 def caizhanyun_headers(config):
-    headers = {
-        "userid": require_config(
-            config,
-            "CAIZHANYUN_USER_ID",
-        ),
+    return {
+        "userid": config["request_user_id"],
+        "Cookie": config["cookie"],
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0",
     }
-    cookie = str(
-        config.get("CAIZHANYUN_COOKIE")
-        or ""
-    ).strip()
-
-    if cookie:
-        headers["Cookie"] = cookie
-
-    return headers
 
 
 def caizhanyun_common_payload(config):
@@ -281,22 +307,17 @@ def caizhanyun_common_payload(config):
         "appVersion": "1.0.0-web",
         "resource": "web|web-browser",
         "clientType": "web",
-        "token": require_config(
-            config,
-            "CAIZHANYUN_TOKEN",
-        ),
-        "storeId": require_config(
-            config,
-            "CAIZHANYUN_STORE_ID",
-        ),
+        "token": config["token"],
+        "storeId": config["store_id"],
     }
 
 
 def capture_caizhanyun(config, limit, session=None):
+    resolved = resolve_caizhanyun_config(config)
     client = session or create_session(
-        caizhanyun_headers(config)
+        caizhanyun_headers(resolved)
     )
-    base_payload = caizhanyun_common_payload(config)
+    base_payload = caizhanyun_common_payload(resolved)
     list_payload = dict(base_payload)
     list_payload.update(
         {
@@ -305,10 +326,9 @@ def capture_caizhanyun(config, limit, session=None):
             "state": "1",
             "lotNo": "",
             "sort": 8,
-            "currentUserId": require_config(
-                config,
-                "CAIZHANYUN_USER_ID",
-            ),
+            "currentUserId": resolved[
+                "request_user_id"
+            ],
         }
     )
 
@@ -332,24 +352,40 @@ def capture_caizhanyun(config, limit, session=None):
     details = []
 
     for item in selected:
-        order_id = item.get("id") if isinstance(item, dict) else None
+        order_id = (
+            item.get("id")
+            if isinstance(item, dict)
+            else None
+        )
+        starter_id = (
+            item.get("starterId")
+            if isinstance(item, dict)
+            else None
+        )
 
         if order_id in (None, ""):
             continue
 
         detail_payload = dict(base_payload)
         detail_payload["prescientId"] = order_id
+        detail_headers = (
+            {"userid": str(starter_id)}
+            if starter_id not in (None, "")
+            else None
+        )
         detail_response = validate_platform_response(
             "caizhanyun",
             response_json(
                 client,
                 CAIZHANYUN_DETAIL_URL,
                 detail_payload,
+                headers=detail_headers,
             ),
         )
         details.append(
             {
                 "order_reference": order_id,
+                "starter_id": starter_id,
                 "response": detail_response,
             }
         )

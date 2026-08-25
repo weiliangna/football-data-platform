@@ -1,8 +1,14 @@
+import importlib
 import io
+import sys
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
+
+from config.caizhanyun_config import CAIZHANYUN_CONFIG
 
 from tools.capture_platform_samples import (
     CAIZHANYUN_DETAIL_URL,
@@ -13,6 +19,7 @@ from tools.capture_platform_samples import (
     capture_caizhanyun,
     capture_hongrui,
     ensure_safe_output_directory,
+    resolve_caizhanyun_config,
     response_json,
     safe_print,
     validate_platform_response,
@@ -53,12 +60,13 @@ class FakeSession:
         self.responses = list(responses)
         self.calls = []
 
-    def post(self, url, json, timeout):
+    def post(self, url, json, timeout, headers=None):
         self.calls.append(
             {
                 "url": url,
                 "json": json,
                 "timeout": timeout,
+                "headers": headers,
             }
         )
         if not self.responses:
@@ -337,8 +345,170 @@ class ResponseTests(unittest.TestCase):
             )
 
 
+class CaizhanyunConfigurationTests(unittest.TestCase):
+    def valid_config(self):
+        return {
+            "CAIZHANYUN_TOKEN": (
+                "fixture-" + "credential"
+            ),
+            "CAIZHANYUN_COOKIE": (
+                "session=" + "fixture-cookie"
+            ),
+        }
+
+    def test_only_token_and_cookie_are_required(self):
+        resolved = resolve_caizhanyun_config(
+            self.valid_config()
+        )
+        self.assertTrue(resolved["token"])
+        self.assertTrue(resolved["cookie"])
+
+    def test_user_id_environment_variable_is_not_required(self):
+        config = self.valid_config()
+        self.assertNotIn("CAIZHANYUN_USER_ID", config)
+        resolved = resolve_caizhanyun_config(config)
+        self.assertTrue(resolved["request_user_id"])
+
+    def test_store_id_falls_back_to_verified_config(self):
+        resolved = resolve_caizhanyun_config(
+            self.valid_config()
+        )
+        self.assertEqual(
+            resolved["store_id"],
+            CAIZHANYUN_CONFIG["store_id"],
+        )
+
+    def test_store_id_environment_override_is_allowed(self):
+        config = self.valid_config()
+        config["CAIZHANYUN_STORE_ID"] = "override-store"
+        resolved = resolve_caizhanyun_config(config)
+        self.assertEqual(
+            resolved["store_id"],
+            "override-store",
+        )
+
+    def test_missing_token_fails(self):
+        config = self.valid_config()
+        config.pop("CAIZHANYUN_TOKEN")
+
+        with self.assertRaises(CaptureError) as caught:
+            resolve_caizhanyun_config(config)
+
+        self.assertIn(
+            "CAIZHANYUN_TOKEN",
+            str(caught.exception),
+        )
+
+    def test_missing_cookie_fails(self):
+        config = self.valid_config()
+        config.pop("CAIZHANYUN_COOKIE")
+
+        with self.assertRaises(CaptureError) as caught:
+            resolve_caizhanyun_config(config)
+
+        self.assertIn(
+            "CAIZHANYUN_COOKIE",
+            str(caught.exception),
+        )
+
+    def test_configuration_error_does_not_leak_secret(self):
+        config = {
+            "CAIZHANYUN_COOKIE": (
+                "session=" + "do-not-print-this"
+            ),
+        }
+
+        with self.assertRaises(CaptureError) as caught:
+            resolve_caizhanyun_config(config)
+
+        self.assertNotIn(
+            "do-not-print-this",
+            str(caught.exception),
+        )
+
+
+class ImportSafetyTests(unittest.TestCase):
+    def import_spider_with_spies(self):
+        calls = {
+            "http": 0,
+            "database": 0,
+        }
+        fake_requests = types.ModuleType("requests")
+        fake_pymysql = types.ModuleType("pymysql")
+        fake_save_order = types.ModuleType(
+            "database.save_order"
+        )
+        fake_save_user = types.ModuleType(
+            "database.save_user"
+        )
+
+        def http_post(*args, **kwargs):
+            calls["http"] += 1
+            raise AssertionError("HTTP called during import")
+
+        def database_write(*args, **kwargs):
+            calls["database"] += 1
+            raise AssertionError("DB called during import")
+
+        fake_requests.post = http_post
+        fake_save_order.save_order = database_write
+        fake_save_user.save_user = database_write
+
+        module_name = "spider.caizhanyun"
+        sys.modules.pop(module_name, None)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch.dict(
+            sys.modules,
+            {
+                "requests": fake_requests,
+                "pymysql": fake_pymysql,
+                "database.save_order": fake_save_order,
+                "database.save_user": fake_save_user,
+            },
+        ):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                imported = importlib.import_module(module_name)
+
+        sys.modules.pop(module_name, None)
+
+        return calls, stdout.getvalue(), stderr.getvalue(), imported
+
+    def test_import_does_not_make_http_request(self):
+        calls, stdout, stderr, imported = (
+            self.import_spider_with_spies()
+        )
+        self.assertEqual(calls["http"], 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertTrue(imported.CONFIG["storeId"])
+
+    def test_import_does_not_connect_or_write_database(self):
+        calls, stdout, stderr, imported = (
+            self.import_spider_with_spies()
+        )
+        self.assertEqual(calls["database"], 0)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "")
+        self.assertTrue(imported.CONFIG["userid"])
+
+
 class OfflineCaptureTests(unittest.TestCase):
-    def test_caizhanyun_uses_only_list_and_detail_reads(self):
+    def caizhanyun_config(self, store_id=None):
+        config = {
+            "CAIZHANYUN_TOKEN": (
+                "fixture-" + "credential"
+            ),
+            "CAIZHANYUN_COOKIE": (
+                "session=" + "fixture-cookie"
+            ),
+        }
+        if store_id is not None:
+            config["CAIZHANYUN_STORE_ID"] = store_id
+        return config
+
+    def test_caizhanyun_uses_dynamic_starter_id(self):
         session = FakeSession(
             [
                 FakeResponse(
@@ -348,10 +518,12 @@ class OfflineCaptureTests(unittest.TestCase):
                             "rankList": [
                                 {
                                     "id": "o-1",
+                                    "starterId": "starter-101",
                                     "play": "让球胜平负",
                                 },
                                 {
                                     "id": "o-2",
+                                    "starterId": "starter-102",
                                     "play": "胜平负",
                                 },
                             ]
@@ -370,26 +542,36 @@ class OfflineCaptureTests(unittest.TestCase):
                 ),
             ]
         )
-        config = {
-            "CAIZHANYUN_TOKEN": "fixture-" + "credential",
-            "CAIZHANYUN_COOKIE": "",
-            "CAIZHANYUN_USER_ID": "fixture-user",
-            "CAIZHANYUN_STORE_ID": "fixture-store",
-        }
 
         result = capture_caizhanyun(
-            config,
+            self.caizhanyun_config(),
             limit=1,
             session=session,
         )
 
         self.assertEqual(result["orders_sampled"], 1)
         self.assertEqual(
+            result["detail_responses"][0]["starter_id"],
+            "starter-101",
+        )
+        self.assertEqual(
+            session.calls[1]["headers"],
+            {"userid": "starter-101"},
+        )
+        self.assertEqual(
             [item["url"] for item in session.calls],
             [
                 CAIZHANYUN_LIST_URL,
                 CAIZHANYUN_DETAIL_URL,
             ],
+        )
+        self.assertNotIn(
+            "CAIZHANYUN_USER_ID",
+            self.caizhanyun_config(),
+        )
+        self.assertNotIn(
+            "CAIZHANYUN_STORE_ID",
+            self.caizhanyun_config(),
         )
 
     def test_hongrui_uses_only_follow_order_and_follow_detail(self):

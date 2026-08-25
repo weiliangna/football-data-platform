@@ -15,8 +15,8 @@ from database.save_user import save_user
 CONFIG = {
     "url": f"{CAIZHANYUN_CONFIG['base_url']}/store/api/prescient-hall/order/recommend/list",
     "token": CAIZHANYUN_CONFIG["token"],
-    "userid": "260610",
-    "storeId": "ds711",
+    "userid": CAIZHANYUN_CONFIG["request_user_id"],
+    "storeId": CAIZHANYUN_CONFIG["store_id"],
 }
 
 
