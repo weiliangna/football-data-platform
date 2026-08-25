@@ -21,6 +21,10 @@ if ROOT not in sys.path:
     )
 
 
+from common.platform_field_mapping import (
+    extract_hongrui_source_fields,
+    resolve_hongrui_handicap,
+)
 from database.mysql import get_conn
 
 
@@ -408,9 +412,9 @@ def parse_detail(
             ).strip()
 
 
-            handicap = to_int(
+            handicap = resolve_hongrui_handicap(
+                market,
                 play.get("rq_number"),
-                0
             )
 
 
@@ -560,7 +564,13 @@ def parse_detail(
                 "option_detail":
                     group[
                         "option_detail"
-                    ]
+                    ],
+
+                "identity_candidate":
+                    week_name,
+
+                "identity_complete":
+                    False
             })
 
 
@@ -581,7 +591,10 @@ def parse_detail(
                     "follow_count"
                 ),
                 0
-            )
+            ),
+
+        "source_fields":
+            extract_hongrui_source_fields(raw)
     }
 
 
@@ -890,6 +903,52 @@ def preview_order(
             )
 
 
+def save_user_avatar(
+    cursor,
+    user_id,
+    nickname,
+    avatar_url,
+):
+    avatar = str(avatar_url or "").strip()
+
+    if user_id in (None, "", 0) or not avatar:
+        return False
+
+    cursor.execute(
+        """
+        INSERT INTO user_profiles_ext
+        (
+            platform_id,
+            user_id,
+            nickname,
+            avatar_url,
+            source
+        )
+        VALUES
+        (3,%s,%s,%s,'hongrui_detail')
+        ON DUPLICATE KEY UPDATE
+            nickname=CASE
+                WHEN VALUES(nickname)<>''
+                THEN VALUES(nickname)
+                ELSE nickname
+            END,
+            avatar_url=CASE
+                WHEN VALUES(avatar_url)<>''
+                THEN VALUES(avatar_url)
+                ELSE avatar_url
+            END,
+            source='hongrui_detail',
+            updated_time=NOW()
+        """,
+        (
+            user_id,
+            str(nickname or ""),
+            avatar,
+        ),
+    )
+    return True
+
+
 # ============================================================
 # 保存订单
 # ============================================================
@@ -931,6 +990,12 @@ def save_order(
             "order_detail"
         )
         or {}
+    )
+
+
+    source_fields = extract_hongrui_source_fields(
+        raw_detail,
+        list_item,
     )
 
 
@@ -1003,6 +1068,9 @@ def save_order(
     )
 
 
+    # head.fans_count is a user-level follower candidate.
+    # orders.follow_num is the order-level follow count, so the two
+    # fields must not be conflated without a schema designed for it.
     follow_num = (
         parsed.get(
             "follow_count"
@@ -1546,6 +1614,14 @@ def save_order(
                     or 0
                 )
             )
+
+
+    save_user_avatar(
+        cursor,
+        user_id,
+        nickname,
+        source_fields.get("avatar_url"),
+    )
 
 
     return True

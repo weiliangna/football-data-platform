@@ -4,8 +4,6 @@ import json
 import argparse
 
 from datetime import datetime
-from zoneinfo import ZoneInfo
-
 import pymysql
 
 
@@ -23,6 +21,14 @@ if BASE_DIR not in sys.path:
 
 
 from common.match_utils import parse_match_name
+from common.platform_field_mapping import (
+    database_datetime,
+    extract_caizhanyun_match_fields,
+    extract_caizhanyun_order_fields,
+    parse_caizhanyun_kickoff,
+    parse_epoch_milliseconds_beijing,
+    select_avatar,
+)
 from database.mysql import get_conn
 from spider.caizhanyun_detail import get_detail
 
@@ -94,25 +100,11 @@ J = {
 # 时间转换
 # ============================================================
 
+
 def timestamp_to_datetime(value):
-
-    if not value:
-        return None
-
-    try:
-
-        dt = datetime.fromtimestamp(
-            int(value) / 1000,
-            tz=ZoneInfo("Asia/Shanghai")
-        )
-
-        return dt.replace(
-            tzinfo=None
-        )
-
-    except Exception:
-
-        return None
+    return database_datetime(
+        parse_epoch_milliseconds_beijing(value)
+    )
 
 
 # ============================================================
@@ -206,40 +198,12 @@ def parse_odds_text(info):
 # 比赛时间
 # ============================================================
 
+
 def parse_match_time(item):
-
-    day = str(
-        item.get("day") or ""
-    ).strip()
-
-
-    enddate = str(
-        item.get("enddate") or ""
-    ).strip()
-
-
-    if not day or not enddate:
-        return None
-
-
-    try:
-
-        time_part = (
-            enddate
-            .split(" ")[-1]
-            .strip()
-        )
-
-
-        return datetime.strptime(
-            f"{day} {time_part}",
-            "%Y%m%d %H:%M"
-        )
-
-
-    except Exception:
-
-        return None
+    return parse_caizhanyun_kickoff(
+        item.get("day"),
+        item.get("enddate"),
+    )
 
 
 # ============================================================
@@ -283,31 +247,43 @@ def build_match_maps(matches):
         )
 
 
+        source_fields = extract_caizhanyun_match_fields(
+            item
+        )
+
+
         meta = {
 
             "team":
-                item.get("team")
+                source_fields["match_name"]
                 or team_id,
 
             "league":
-                item.get("league")
-                or "",
+                source_fields["league"],
 
             "teamId":
-                team_id,
+                source_fields["team_id"],
 
             "day":
-                day,
+                source_fields["day"],
 
             "week":
-                item.get("week")
-                or "",
+                source_fields["week"],
 
             "letpoint":
-                item.get("letpoint"),
+                source_fields["letpoint"],
 
             "matchId":
-                item.get("matchId")
+                source_fields["match_id"],
+
+            "enddate":
+                source_fields["enddate"],
+
+            "kickoff_time":
+                source_fields["kickoff_time"],
+
+            "identity_candidate":
+                source_fields["identity_candidate"]
 
         }
 
@@ -813,7 +789,16 @@ def decode_primary_bet(
                     None,
 
                 "matchId":
-                    None
+                    None,
+
+                "enddate":
+                    "",
+
+                "kickoff_time":
+                    None,
+
+                "identity_candidate":
+                    ""
             }
         )
 
@@ -833,10 +818,31 @@ def decode_primary_bet(
                 or "",
 
             "team_id":
-                tid,
+                meta.get("teamId")
+                or tid,
+
+            "match_id":
+                meta.get("matchId")
+                or "",
 
             "day":
-                bet_day,
+                meta.get("day")
+                or bet_day,
+
+            "week":
+                meta.get("week")
+                or "",
+
+            "enddate":
+                meta.get("enddate")
+                or "",
+
+            "kickoff_time":
+                meta.get("kickoff_time"),
+
+            "identity_candidate":
+                meta.get("identity_candidate")
+                or "",
 
             "market_code":
                 market_code,
@@ -1114,6 +1120,53 @@ def save_match(
     )
 
 
+def save_user_avatar(
+    cursor,
+    user_id,
+    nickname,
+    avatar_url,
+):
+    avatar = str(avatar_url or "").strip()
+
+    if user_id in (None, "", 0) or not avatar:
+        return False
+
+    cursor.execute(
+        """
+        INSERT INTO user_profiles_ext
+        (
+            platform_id,
+            user_id,
+            nickname,
+            avatar_url,
+            source
+        )
+        VALUES
+        (%s,%s,%s,%s,'caizhanyun_detail')
+        ON DUPLICATE KEY UPDATE
+            nickname=CASE
+                WHEN VALUES(nickname)<>''
+                THEN VALUES(nickname)
+                ELSE nickname
+            END,
+            avatar_url=CASE
+                WHEN VALUES(avatar_url)<>''
+                THEN VALUES(avatar_url)
+                ELSE avatar_url
+            END,
+            source='caizhanyun_detail',
+            updated_time=NOW()
+        """,
+        (
+            PLATFORM_ID,
+            user_id,
+            str(nickname or ""),
+            avatar,
+        ),
+    )
+    return True
+
+
 # ============================================================
 # 字段检查
 # ============================================================
@@ -1297,13 +1350,19 @@ def enrich_order(
     )
 
 
-    publish_time = (
-        timestamp_to_datetime(
-            info.get(
-                "createTime"
-            )
-        )
+    order_source_fields = (
+        extract_caizhanyun_order_fields(info)
     )
+
+
+    publish_time = order_source_fields[
+        "publish_time"
+    ]
+
+
+    end_time_candidate = order_source_fields[
+        "end_time_candidate"
+    ]
 
        # ================================
     # 提取让球盘口
@@ -1390,6 +1449,11 @@ def enrich_order(
     )
 
 
+    avatar_url = select_avatar(
+        detail_avatar=starter.get("headPic"),
+    )
+
+
     first_match = (
         matches[0]
         if matches
@@ -1469,6 +1533,12 @@ def enrich_order(
     print(
         "发布时间:",
         publish_time
+    )
+
+
+    print(
+        "方案截止候选（非逐腿deadline）:",
+        end_time_candidate
     )
 
 
@@ -1634,6 +1704,14 @@ def enrich_order(
             cursor,
             item
         )
+
+
+    save_user_avatar(
+        cursor,
+        user_id,
+        nickname,
+        avatar_url,
+    )
 
 
     print()

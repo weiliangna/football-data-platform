@@ -15,8 +15,8 @@ from database.save_user import save_user
 CONFIG = {
     "url": f"{CAIZHANYUN_CONFIG['base_url']}/store/api/prescient-hall/order/recommend/list",
     "token": CAIZHANYUN_CONFIG["token"],
-    "userid": "260610",
-    "storeId": "ds711",
+    "userid": CAIZHANYUN_CONFIG["request_user_id"],
+    "storeId": CAIZHANYUN_CONFIG["store_id"],
 }
 
 
@@ -78,6 +78,8 @@ def run():
                 "hit_rate": float(item.get("rate", 0)) / 10000,
                 "profitability": item.get("profitRate", 0),
                 "follow_num": item.get("fansNumber", 0),
+                "avatar_url": item.get("staterPhoto"),
+                "avatar_source": "caizhanyun_list",
             }
 
             print("保存订单:", order["nickname"], order["stake"])
