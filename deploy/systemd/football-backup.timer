@@ -1,0 +1,10 @@
+[Unit]
+Description=Football Database Backup Daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=football-backup.service
+
+[Install]
+WantedBy=timers.target

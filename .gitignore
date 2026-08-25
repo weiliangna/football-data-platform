@@ -1,0 +1,88 @@
+# Python environments and caches
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node build artifacts
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Environment files and local secrets
+.env
+.env.*
+config/*.env
+config/yuncai_config.py
+config/*token*.json
+config/*secret*.json
+config/*credentials*.json
+config/*cookie*.json
+
+# Safe configuration templates
+!.env.example
+!config/*.env.example
+
+# Safe recovered source files
+!database/save_user.py
+!database/save_order.py
+!spider/caizhanyun_detail.py
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Database dumps
+*.sql
+!database/schema/football_data_schema.sql
+*.sql.gz
+*.dump
+*.dump.gz
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Backups
+backup*/
+*_backup*
+*.bak
+*.bak_*
+*~
+main.py.bak_*
+
+# Temporary/debug pages and copied files
+temp_*.html
+tmp_*.html
+debug_*.html
+*.html.copy
+*.old
+
+# Accidental local files
+nul
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Missing local-only files that have not yet been safely migrated
+database/init_db.py
+database/init_expert_profile.py
+database/init_match_results.py
+database/init_order_matches.py
+database/init_user_statistics.py
+database/update_match_results.py
+database/update_user_statistics.py
+database/save_order_detail.py

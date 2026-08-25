@@ -1,0 +1,16 @@
+[Unit]
+Description=Sync Football User Avatars Every 30 Minutes
+
+[Timer]
+OnBootSec=90s
+
+OnUnitActiveSec=1800s
+
+AccuracySec=30s
+
+Persistent=true
+
+Unit=football-avatar-sync.service
+
+[Install]
+WantedBy=timers.target

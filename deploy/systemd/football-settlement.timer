@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Football Settlement Every Minute
+
+[Timer]
+OnBootSec=50s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=true
+Unit=football-settlement.service
+
+[Install]
+WantedBy=timers.target

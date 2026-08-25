@@ -1,0 +1,12 @@
+[Unit]
+Description=Football Four Platform Pipeline Every Minute
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+Persistent=true
+AccuracySec=5s
+Unit=football-pipeline.service
+
+[Install]
+WantedBy=timers.target

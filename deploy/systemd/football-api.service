@@ -1,0 +1,17 @@
+[Unit]
+Description=Football Data Platform FastAPI Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/www/wwwroot/football_system
+EnvironmentFile=/www/wwwroot/football_system/config/database.env
+EnvironmentFile=/www/wwwroot/football_system/config/app.env
+ExecStart=/www/wwwroot/football_system/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

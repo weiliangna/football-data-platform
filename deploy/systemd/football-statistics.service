@@ -1,0 +1,11 @@
+[Unit]
+Description=Football User Statistics Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/www/wwwroot/football_system
+EnvironmentFile=/www/wwwroot/football_system/config/database.env
+ExecStart=/www/wwwroot/football_system/venv/bin/python -m spider.run_job --name football-statistics --module spider.update_statistics

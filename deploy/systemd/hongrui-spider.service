@@ -1,0 +1,12 @@
+[Unit]
+Description=Hongrui Football Order Spider
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+WorkingDirectory=/www/wwwroot/football_system
+EnvironmentFile=/www/wwwroot/football_system/config/database.env
+EnvironmentFile=/www/wwwroot/football_system/config/hongrui.env
+ExecStart=/www/wwwroot/football_system/venv/bin/python -m spider.run_job --name hongrui-spider --platform-id 3 --module spider.hongrui
