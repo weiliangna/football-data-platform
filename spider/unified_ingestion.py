@@ -806,6 +806,7 @@ def ingest_records(
         "new_count": 0,
         "duplicate_count": 0,
         "failed_count": 0,
+        "issue_count": 0,
         "failed": [],
         "issues": [],
     }
@@ -822,7 +823,9 @@ def ingest_records(
                 summary["new_count"] += 1
             else:
                 summary["duplicate_count"] += 1
-            summary["issues"].extend(record.get("issues") or [])
+            record_issues = list(record.get("issues") or [])
+            summary["issues"].extend(record_issues)
+            summary["issue_count"] += len(record_issues)
         except Exception as exc:
             summary["failed_count"] += 1
             summary["failed"].append(
@@ -833,7 +836,10 @@ def ingest_records(
                 }
             )
 
-    if summary["failed_count"] == 0:
+    if (
+        summary["failed_count"] == 0
+        and summary["issue_count"] == 0
+    ):
         status = "success"
     elif summary["new_count"] or summary["duplicate_count"]:
         status = "partial"

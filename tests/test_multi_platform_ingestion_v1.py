@@ -50,7 +50,14 @@ except ModuleNotFoundError:
 
 
 from config.caizhanyun_config import get_caizhanyun_config
-from spider import caizhanyun, haodianzhu, qishilu, yuncai, zhouyunbao
+from spider import (
+    caizhanyun,
+    haodianzhu,
+    pipeline,
+    qishilu,
+    yuncai,
+    zhouyunbao,
+)
 from spider.unified_ingestion import (
     DatabaseRepository,
     PlatformOrderCollision,
@@ -525,6 +532,55 @@ class SourceContractTests(unittest.TestCase):
         )
         self.assertEqual(record["legs"], [])
         self.assertTrue(any("unverified_market:g999" in value for value in record["issues"]))
+
+    def test_qishilu_contract_issues_mark_ingestion_partial(self):
+        response = qishilu_list_response()
+        repository = RecordingRepository()
+        summary = qishilu.ingest_responses(
+            response,
+            lambda _source_id, _item: qishilu_detail_response(
+                market_key="g999"
+            ),
+            repository=repository,
+        )
+
+        self.assertEqual(summary["new_count"], 1)
+        self.assertGreaterEqual(summary["issue_count"], 1)
+        self.assertEqual(summary["status"], "partial")
+
+    def test_pipeline_logs_contract_issue_and_keeps_platform_partial(self):
+        definition = next(
+            item
+            for item in pipeline.PLATFORM_DEFINITIONS
+            if item.key == "qishilu"
+        )
+        runtime = {
+            "platform_id": 6,
+            "enabled": 1,
+            "spider_enabled": 1,
+        }
+        summary = {
+            "new_count": 1,
+            "duplicate_count": 0,
+            "failed_count": 0,
+            "issue_count": 1,
+            "issues": ["启示录:offline:unverified_market:g999"],
+        }
+
+        with patch("builtins.print") as output:
+            status = pipeline._run_one(
+                definition,
+                runtime,
+                lambda _runtime: summary,
+            )
+
+        self.assertEqual(status["status"], "partial")
+        self.assertTrue(
+            any(
+                "unverified_market:g999" in str(call)
+                for call in output.call_args_list
+            )
+        )
 
     def test_one_failed_detail_does_not_stop_other_orders_or_status(self):
         response = magicangle_list_response()

@@ -75,6 +75,7 @@ def _summary_counts(summary):
             data.get("duplicate_count") or 0
         ),
         "failed_count": int(data.get("failed_count") or 0),
+        "issue_count": int(data.get("issue_count") or 0),
     }
 
 
@@ -83,6 +84,7 @@ def _combine_summaries(*summaries):
         "new_count": 0,
         "duplicate_count": 0,
         "failed_count": 0,
+        "issue_count": 0,
     }
     for summary in summaries:
         counts = _summary_counts(summary)
@@ -247,7 +249,18 @@ def _run_one(definition, runtime, runner):
         summary = runner(runtime) or {}
         counts = _summary_counts(summary)
         base.update(counts)
-        if counts["failed_count"]:
+        issues = list(summary.get("issues") or [])
+        for issue in issues[:20]:
+            print(
+                f"{definition.name}数据契约问题:",
+                redact_sensitive_text(str(issue)),
+            )
+        if len(issues) > 20:
+            print(
+                f"{definition.name}数据契约问题:",
+                f"另有 {len(issues) - 20} 条未展开",
+            )
+        if counts["failed_count"] or counts["issue_count"]:
             base["status"] = (
                 "partial"
                 if counts["new_count"]
