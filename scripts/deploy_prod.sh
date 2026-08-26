@@ -302,6 +302,25 @@ run_tests() {
 }
 
 
+wait_for_http() {
+    local url="$1"
+    local attempts="${2:-30}"
+    local attempt
+
+    for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+        if curl --fail --silent --max-time 5 "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+
+        if [[ "$attempt" -lt "$attempts" ]]; then
+            sleep 1
+        fi
+    done
+
+    return 1
+}
+
+
 verify_api() {
     if systemctl is-active --quiet football-api; then
         log_event "service=football-api status=active"
@@ -310,18 +329,19 @@ verify_api() {
         return 1
     fi
 
-    if curl --fail --silent --show-error --max-time 15 \
-        "http://127.0.0.1:8000/" >/dev/null; then
+    if wait_for_http "http://127.0.0.1:8000/" 30; then
         log_event "service=football-api root_health=PASS"
     else
+        announce "football-api did not become ready within 30 seconds."
         log_event "service=football-api root_health=FAIL"
         return 1
     fi
 
-    if curl --fail --silent --show-error --max-time 20 \
-        "http://127.0.0.1:8000/api/portal/dashboard" >/dev/null; then
+    if wait_for_http \
+        "http://127.0.0.1:8000/api/portal/dashboard" 30; then
         log_event "service=football-api dashboard_health=PASS"
     else
+        announce "football-api dashboard did not become ready within 30 seconds."
         log_event "service=football-api dashboard_health=FAIL"
         return 1
     fi

@@ -20,6 +20,20 @@ class DeploymentCompileScopeTests(unittest.TestCase):
         self.assertNotIn("git clean", script)
         self.assertNotIn("rm -rf", script)
 
+    def test_api_health_checks_wait_for_service_readiness(self):
+        script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("wait_for_http()", script)
+        self.assertIn(
+            'wait_for_http "http://127.0.0.1:8000/" 30',
+            script,
+        )
+        self.assertIn(
+            '"http://127.0.0.1:8000/api/portal/dashboard" 30',
+            script,
+        )
+        self.assertIn("sleep 1", script)
+
 
 if __name__ == "__main__":
     unittest.main()
