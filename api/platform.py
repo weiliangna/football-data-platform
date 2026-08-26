@@ -14,6 +14,12 @@ CONFIG_FIELDS = (
     "settlement_enabled",
 )
 
+READY_SYNC_STATUSES = {
+    "success",
+    "partial",
+    "external_scheduler",
+}
+
 
 def _integer(value, default=0):
     try:
@@ -103,6 +109,43 @@ def merge_platform_configs(rows):
     )
 
 
+def attach_runtime_status(platforms, sync_rows):
+    latest = {
+        _integer(row.get("platform_id"), 0): row
+        for row in sync_rows or []
+        if isinstance(row, dict)
+        and _integer(row.get("platform_id"), 0) > 0
+    }
+    result = []
+
+    for platform in platforms:
+        item = dict(platform)
+        platform_id = _integer(item.get("platform_id"), 0)
+        sync = latest.get(platform_id, {})
+
+        if _integer(item.get("enabled"), 0) != 1:
+            runtime_status = "disabled"
+        elif sync.get("status"):
+            runtime_status = str(sync["status"]).strip()
+        elif not item.get("configured"):
+            runtime_status = "waiting_config"
+        else:
+            runtime_status = "not_run"
+
+        item["runtime_status"] = runtime_status
+        item["runtime_ready"] = runtime_status in READY_SYNC_STATUSES
+        item["last_sync_time"] = sync.get("created_time")
+        item["last_new_count"] = _integer(sync.get("new_count"), 0)
+        item["last_duplicate_count"] = _integer(
+            sync.get("duplicate_count"),
+            0,
+        )
+        item["last_cost_time"] = float(sync.get("cost_time") or 0)
+        result.append(item)
+
+    return result
+
+
 @router.get("/list")
 def platform_list():
     conn = None
@@ -126,17 +169,45 @@ def platform_list():
             """
         )
         rows = cursor.fetchall() or []
+        platforms = merge_platform_configs(rows)
+        sync_rows = []
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    sl.platform_id,
+                    sl.new_count,
+                    sl.duplicate_count,
+                    sl.status,
+                    sl.cost_time,
+                    sl.created_time
+                FROM sync_log sl
+                INNER JOIN
+                (
+                    SELECT platform_id,MAX(id) AS latest_id
+                    FROM sync_log
+                    GROUP BY platform_id
+                ) latest
+                    ON latest.latest_id=sl.id
+                """
+            )
+            sync_rows = cursor.fetchall() or []
+        except Exception:
+            sync_rows = []
         return {
             "code": 200,
             "status": "success",
-            "data": merge_platform_configs(rows),
+            "data": attach_runtime_status(platforms, sync_rows),
         }
     except Exception:
         return {
             "code": 200,
             "status": "degraded",
             "msg": "platform_config unavailable",
-            "data": merge_platform_configs([]),
+            "data": attach_runtime_status(
+                merge_platform_configs([]),
+                [],
+            ),
         }
     finally:
         if cursor:

@@ -216,7 +216,7 @@ def post_json(
 # 跟单大厅
 # ============================================================
 
-def get_follow_orders(
+def get_follow_order_page(
     page=1,
     list_type=1
 ):
@@ -237,10 +237,22 @@ def get_follow_orders(
     )
 
 
-    return (
-        data.get("data")
-        or []
+    rows = data.get("data") or []
+    total = to_int(data.get("count"), 0)
+
+    return rows, total
+
+
+def get_follow_orders(
+    page=1,
+    list_type=1
+):
+
+    rows, _ = get_follow_order_page(
+        page=page,
+        list_type=list_type,
     )
+    return rows
 
 
 def get_all_follow_orders(
@@ -256,7 +268,9 @@ def get_all_follow_orders(
         max(int(start_page), 1) + max(int(max_pages), 1),
     ):
 
-        page_orders = get_follow_orders(page=page)
+        page_orders, total = get_follow_order_page(
+            page=page,
+        )
         added = 0
 
         for item in page_orders:
@@ -273,6 +287,9 @@ def get_all_follow_orders(
             seen.add(order_id)
             orders.append(item)
             added += 1
+
+        if total > 0 and len(orders) >= total:
+            break
 
         if not page_orders or added == 0:
             break

@@ -121,6 +121,45 @@ class PlatformApiVisibilityTests(unittest.TestCase):
         self.assertEqual(len(response["data"]), 6)
         self.assertNotIn("database detail", response["msg"])
 
+    def test_runtime_status_uses_latest_sync_result(self):
+        module = load_platform_module()
+        platforms = module.merge_platform_configs(
+            [
+                {
+                    "platform_id": 2,
+                    "name": "州运宝",
+                    "enabled": 1,
+                },
+                {
+                    "platform_id": 3,
+                    "name": "鸿瑞",
+                    "enabled": 1,
+                },
+            ]
+        )
+        rows = module.attach_runtime_status(
+            platforms,
+            [
+                {
+                    "platform_id": 2,
+                    "status": "waiting_config",
+                    "new_count": 0,
+                },
+                {
+                    "platform_id": 3,
+                    "status": "success",
+                    "new_count": 65,
+                },
+            ],
+        )
+        by_id = {item["platform_id"]: item for item in rows}
+
+        self.assertEqual(by_id[2]["runtime_status"], "waiting_config")
+        self.assertFalse(by_id[2]["runtime_ready"])
+        self.assertEqual(by_id[3]["runtime_status"], "success")
+        self.assertTrue(by_id[3]["runtime_ready"])
+        self.assertEqual(by_id[3]["last_new_count"], 65)
+
 
 class FrontendPlatformVisibilityTests(unittest.TestCase):
     def test_experts_page_loads_platform_api_and_has_six_fallbacks(self):
@@ -138,6 +177,20 @@ class FrontendPlatformVisibilityTests(unittest.TestCase):
             "启示录",
         ):
             self.assertIn(name, source)
+
+    def test_sidebar_shows_runtime_status_instead_of_database_flag(self):
+        source = (
+            ROOT
+            / "frontend"
+            / "src"
+            / "components"
+            / "layout"
+            / "AppSidebar.vue"
+        ).read_text(encoding="utf-8-sig")
+
+        for label in ("部分成功", "采集失败", "缺少配置", "契约待补"):
+            self.assertIn(label, source)
+        self.assertIn("item.runtime_status", source)
 
 
 if __name__ == "__main__":

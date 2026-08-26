@@ -20,7 +20,7 @@ except ModuleNotFoundError:
     sys.modules["pymysql"] = pymysql_stub
 
 
-from spider import caizhanyun, haodianzhu, qishilu
+from spider import caizhanyun, haodianzhu, hongrui, qishilu
 from spider.pagination import collect_numbered_pages
 from api.portal import enrich_order
 
@@ -151,6 +151,27 @@ class PaginationTests(unittest.TestCase):
             )
         self.assertEqual(session.pages, [1, 2])
         self.assertEqual([item["id"] for item in rows], ["C-1", "C-2", "C-3"])
+
+    def test_hongrui_stops_when_first_page_reaches_reported_total(self):
+        calls = []
+        page_rows = [
+            {"order_id": value}
+            for value in range(1, 66)
+        ]
+
+        def fetch_page(page=1, list_type=1):
+            calls.append((page, list_type))
+            return page_rows, 65
+
+        with patch.object(
+            hongrui,
+            "get_follow_order_page",
+            side_effect=fetch_page,
+        ):
+            rows = hongrui.get_all_follow_orders(max_pages=5)
+
+        self.assertEqual(calls, [(1, 1)])
+        self.assertEqual(len(rows), 65)
 
     def test_haodianzhu_uses_has_next_and_enriches_all_avatars(self):
         client = HaodianzhuClient()
