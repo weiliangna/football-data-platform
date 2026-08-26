@@ -269,17 +269,29 @@ install_python_requirements() {
 
 
 compile_python() {
+    local tracked_file
+    local tracked_files=()
+    local python_files=()
+
+    mapfile -d '' tracked_files < <(
+        admin_git ls-files -z -- '*.py'
+    )
+
+    for tracked_file in "${tracked_files[@]}"; do
+        if [[ -f "$PROJECT_DIR/$tracked_file" ]]; then
+            python_files+=("$PROJECT_DIR/$tracked_file")
+        fi
+    done
+
+    if [[ "${#python_files[@]}" -eq 0 ]]; then
+        announce "No Git-tracked Python files found; skipping compile check."
+        return 0
+    fi
+
+    announce "Compiling ${#python_files[@]} Git-tracked Python files."
     run_as_admin env PYTHONPATH="$PROJECT_DIR" \
-        "$PROJECT_DIR/venv/bin/python" -m compileall -q \
-        "$PROJECT_DIR/main.py" \
-        "$PROJECT_DIR/api" \
-        "$PROJECT_DIR/common" \
-        "$PROJECT_DIR/config" \
-        "$PROJECT_DIR/database" \
-        "$PROJECT_DIR/scheduler" \
-        "$PROJECT_DIR/scripts" \
-        "$PROJECT_DIR/spider" \
-        "$PROJECT_DIR/tests"
+        "$PROJECT_DIR/venv/bin/python" -m py_compile \
+        "${python_files[@]}"
 }
 
 
