@@ -1,24 +1,45 @@
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
 :root {
   font-family:
-    "Microsoft YaHei",
+    Inter,
     "PingFang SC",
-    Arial,
+    "Noto Sans CJK SC",
+    "Microsoft YaHei",
+    system-ui,
+    -apple-system,
     sans-serif;
+  color: #f4f7f2;
+  background: #090d0a;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 
-  color: #172033;
-  background: #f4f6fa;
+  /* Compatibility tokens for the existing data views. */
+  --surface-soft: #171d18;
+  --primary: #b8ff38;
+  --primary-2: #42f5c5;
+  --primary-soft: rgba(184, 255, 56, .12);
+  --green: #42f5c5;
+  --blue: #6dd7ff;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: #090d0a;
 }
 
 body {
-  margin: 0;
   min-width: 320px;
-  background:
-    radial-gradient(circle at top right, #e9f3ff 0, transparent 35%),
-    #f4f6fa;
+  min-height: 100vh;
+  margin: 0;
+  background: #090d0a;
 }
 
 a {
@@ -27,565 +48,58 @@ a {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
+}
+
+button,
+a,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #b8ff38;
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+img {
+  max-width: 100%;
 }
 
 #app {
   min-height: 100vh;
 }
 
-.topbar {
-  height: 68px;
-  padding: 0 6%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-
-  background: #101827;
-  color: #fff;
-
-  box-shadow: 0 3px 16px rgba(0, 0, 0, .12);
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-
-  font-size: 19px;
-  font-weight: 700;
-}
-
-.logo-icon {
-  font-size: 25px;
-}
-
-nav {
-  display: flex;
-  align-items: center;
-  gap: 34px;
-}
-
-nav a {
-  color: #cbd5e1;
-  transition: .2s;
-}
-
-nav a:hover,
-nav a.router-link-active {
-  color: #fff;
-}
-
-.container {
-  width: min(1180px, 92%);
-  margin: 0 auto;
-  padding: 36px 0 60px;
-}
-
-.hero {
-  min-height: 245px;
-
-  padding: 42px;
-
-  border-radius: 24px;
-
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-
-  color: white;
-
-  background:
-    linear-gradient(
-      125deg,
-      #111827 0%,
-      #172554 55%,
-      #1d4ed8 100%
-    );
-
-  box-shadow:
-    0 18px 45px rgba(30, 64, 175, .18);
-}
-
-.hero-tag,
-.section-kicker {
-  font-size: 12px;
-  letter-spacing: 2px;
-  font-weight: 700;
-  opacity: .7;
-}
-
-.hero h1 {
-  margin: 10px 0 12px;
-  font-size: 38px;
-}
-
-.hero p {
-  max-width: 650px;
-  margin: 0;
-  line-height: 1.8;
-  color: #dbeafe;
-}
-
-.hero-score {
-  min-width: 150px;
-  text-align: center;
-
-  padding: 24px;
-
-  border: 1px solid rgba(255,255,255,.18);
-  border-radius: 18px;
-
-  background: rgba(255,255,255,.08);
-}
-
-.hero-score span {
-  display: block;
-  color: #bfdbfe;
-}
-
-.hero-score strong {
-  display: block;
-  margin-top: 7px;
-  font-size: 42px;
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 18px;
-
-  margin-top: 22px;
-}
-
-.stat-card {
-  padding: 24px;
-  background: #fff;
-  border-radius: 18px;
-
-  border: 1px solid #edf0f5;
-
-  box-shadow:
-    0 8px 25px rgba(15, 23, 42, .05);
-}
-
-.stat-label {
-  color: #64748b;
-  font-size: 14px;
-}
-
-.stat-value {
-  margin: 8px 0;
-  font-size: 31px;
-  font-weight: 800;
-}
-
-.stat-desc {
-  color: #94a3b8;
-  font-size: 13px;
-}
-
-.section {
-  margin-top: 40px;
-}
-
-.section-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-
-  margin-bottom: 20px;
-}
-
-.section-head h2 {
-  margin: 6px 0 0;
-}
-
-.more-link {
-  color: #2563eb;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.expert-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 18px;
-}
-
-.expert-card {
-  background: #fff;
-
-  border-radius: 19px;
-
-  padding: 22px;
-
-  border: 1px solid #edf0f5;
-
-  box-shadow:
-    0 8px 25px rgba(15, 23, 42, .05);
-}
-
-.expert-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.rank {
-  font-size: 20px;
-  font-weight: 800;
-}
-
-.level {
-  display: inline-block;
-
-  padding: 5px 10px;
-
-  border-radius: 20px;
-
-  background: #eef4ff;
-  color: #2563eb;
-
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.expert-card h3 {
-  margin: 18px 0 10px;
-  font-size: 19px;
-}
-
-.expert-score {
-  font-size: 32px;
-  font-weight: 800;
-  color: #111827;
-}
-
-.expert-score span {
-  margin-left: 7px;
-  color: #94a3b8;
-  font-size: 12px;
-  font-weight: normal;
-}
-
-.expert-data {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-
-  margin-top: 20px;
-
-  border-top: 1px solid #edf0f5;
-  border-bottom: 1px solid #edf0f5;
-}
-
-.expert-data div {
-  padding: 16px 4px;
-  text-align: center;
-}
-
-.expert-data strong,
-.expert-data span {
-  display: block;
-}
-
-.expert-data strong {
-  font-size: 16px;
-}
-
-.expert-data span {
-  margin-top: 4px;
-  color: #94a3b8;
-  font-size: 11px;
-}
-
-.expert-footer {
-  padding-top: 14px;
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.page-title {
-  margin: 10px 0 26px;
-}
-
-.page-title h1 {
-  margin: 7px 0;
-  font-size: 34px;
-}
-
-.page-title p {
-  color: #64748b;
-}
-
-.table-card {
-  overflow-x: auto;
-
-  background: #fff;
-
-  border-radius: 18px;
-
-  border: 1px solid #edf0f5;
-
-  box-shadow:
-    0 8px 25px rgba(15, 23, 42, .05);
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-th,
-td {
-  padding: 16px 18px;
-  text-align: left;
-
-  border-bottom: 1px solid #edf0f5;
-}
-
-th {
-  background: #f8fafc;
-  color: #64748b;
-
-  font-size: 13px;
-}
-
-td {
-  font-size: 14px;
-}
-
-.expert-name {
-  font-weight: 700;
-}
-
-.rank-number {
-  font-weight: 800;
-}
-
-.score-cell {
-  color: #2563eb;
-  font-weight: 800;
-}
-
-.state-box {
-  padding: 35px;
-
-  border-radius: 18px;
-
-  background: #fff;
-
-  border: 1px solid #edf0f5;
-
-  text-align: center;
-
-  color: #64748b;
-}
-
-.state-box.error {
-  color: #dc2626;
-}
-
-@media (max-width: 900px) {
-
-  .expert-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .hero {
-    padding: 30px;
-  }
-
-}
-
-@media (max-width: 650px) {
-
-  .topbar {
-    height: auto;
-    padding: 16px 5%;
-    flex-direction: column;
-    gap: 14px;
-  }
-
-  nav {
-    gap: 18px;
-    font-size: 14px;
-  }
-
-  .hero {
-    display: block;
-  }
-
-  .hero h1 {
-    font-size: 29px;
-  }
-
-  .hero-score {
-    margin-top: 25px;
-  }
-
-  .stats-grid,
-  .expert-grid {
-    grid-template-columns: 1fr;
-  }
-
-}
-.order-list{
-
-display:grid;
-
-grid-template-columns:repeat(3,1fr);
-
-gap:18px;
-
-}
-
-
-
-.order-card{
-
-background:#fff;
-
-border-radius:18px;
-
-padding:20px;
-
-border:1px solid #edf0f5;
-
-}
-
-
-
-.order-top{
-
-display:flex;
-
-justify-content:space-between;
-
-}
-
-
-
-.order-top span{
-
-color:#64748b;
-
-font-size:13px;
-
-}
-
-
-
-.order-card h3{
-
-margin:15px 0;
-
-}
-
-
-
-.order-footer{
-
-display:flex;
-
-justify-content:space-between;
-
-color:#2563eb;
-
-font-size:13px;
-
-}
-
-
-
-.match-grid{
-
-display:grid;
-
-grid-template-columns:repeat(4,1fr);
-
-gap:15px;
-
-}
-
-
-
-.match-card{
-
-background:white;
-
-padding:20px;
-
-border-radius:16px;
-
-border:1px solid #edf0f5;
-
-}
-
-
-
-.league{
-
-color:#2563eb;
-
-font-size:13px;
-
+::selection {
+  color: #07110b;
+  background: #b8ff38;
 }
 
-
-
-.teams{
-
-display:flex;
-
-justify-content:center;
-
-gap:12px;
-
-margin:20px 0;
-
-font-weight:bold;
-
-}
-
-
-
-.status{
-
-text-align:center;
-
-color:#64748b;
-
-font-size:13px;
-
-}
-
-
-
-.loading{
-
-text-align:center;
-
-padding:30px;
-
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
 
-
-
-@media(max-width:900px){
-
-.order-list{
-
-grid-template-columns:1fr;
-
+::-webkit-scrollbar-track {
+  background: #0c110d;
 }
-
-
-.match-grid{
-
-grid-template-columns:1fr;
 
+::-webkit-scrollbar-thumb {
+  border: 2px solid #0c110d;
+  border-radius: 999px;
+  background: #344035;
 }
 
+::-webkit-scrollbar-thumb:hover {
+  background: #526151;
 }
