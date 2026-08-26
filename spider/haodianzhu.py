@@ -56,7 +56,17 @@ def _response_json(response):
     if not isinstance(data, dict):
         raise ValueError("好店主响应不是 JSON 对象")
     if str(data.get("code") or "") != "0000":
-        raise RuntimeError("好店主接口返回非成功状态")
+        code = str(data.get("code") or "unknown").strip()
+        message = str(
+            data.get("message")
+            or data.get("msg")
+            or data.get("errorMsg")
+            or "未提供错误信息"
+        ).strip()
+        raise RuntimeError(
+            f"好店主接口返回非成功状态 code={code} "
+            f"message={message[:200]}"
+        )
     return data
 
 

@@ -227,6 +227,32 @@ class VerifiedHttpContractTests(unittest.TestCase):
             "14958010",
         )
 
+    def test_haodianzhu_reports_business_error_code_and_message(self):
+        session = RecordingSession(
+            [
+                {
+                    "code": "OFFLINE-401",
+                    "message": "offline session expired",
+                }
+            ]
+        )
+        client = haodianzhu.HaodianzhuClient(
+            config={
+                "sid": "offline-session",
+                "uuid": "offline-device",
+                "cookie": "offline-cookie",
+                "shop_id": "7876",
+                "url": "https://offline.invalid/router/rest",
+            },
+            session=session,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "code=OFFLINE-401 message=offline session expired",
+        ):
+            client.list_orders()
+
     def test_qishilu_uses_verified_list_detail_and_profile_paths(self):
         session = RecordingSession(
             [
