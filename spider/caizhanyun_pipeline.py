@@ -168,13 +168,14 @@ def unique_ids(values):
     return result
 
 
-def enrich_order(order_id, python_bin):
-    steps = (
+def build_enrichment_steps(order_id, python_bin):
+    return (
         (
             f"订单 {order_id}：详情/投注内容解码",
             [
                 python_bin,
-                "spider/caizhanyun_enrich.py",
+                "-m",
+                "spider.caizhanyun_enrich",
                 "--id",
                 str(order_id),
                 "--write",
@@ -184,7 +185,8 @@ def enrich_order(order_id, python_bin):
             f"订单 {order_id}：串关/注数/倍数",
             [
                 python_bin,
-                "spider/caizhanyun_pass_enrich.py",
+                "-m",
+                "spider.caizhanyun_pass_enrich",
                 "--id",
                 str(order_id),
                 "--write",
@@ -194,12 +196,17 @@ def enrich_order(order_id, python_bin):
             f"订单 {order_id}：生成比赛拆腿",
             [
                 python_bin,
-                "spider/build_order_matches.py",
+                "-m",
+                "spider.build_order_matches",
                 "--id",
                 str(order_id),
             ],
         ),
     )
+
+
+def enrich_order(order_id, python_bin):
+    steps = build_enrichment_steps(order_id, python_bin)
 
     print()
     print("#" * 100)

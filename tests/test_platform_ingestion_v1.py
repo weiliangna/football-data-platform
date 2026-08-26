@@ -35,6 +35,7 @@ except ModuleNotFoundError:
 from api.portal import resolve_order_deadline
 from common.match_utils import parse_match_name
 from spider import pipeline
+from spider.caizhanyun_pipeline import build_enrichment_steps
 from spider.build_order_matches import (
     parse_selection_legs,
     upsert_order_matches,
@@ -217,6 +218,20 @@ class MatchNameTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_caizhanyun_enrichment_uses_package_modules(self):
+        steps = build_enrichment_steps(1174, "python")
+        commands = [command for _title, command in steps]
+
+        self.assertEqual(
+            [command[1:3] for command in commands],
+            [
+                ["-m", "spider.caizhanyun_enrich"],
+                ["-m", "spider.caizhanyun_pass_enrich"],
+                ["-m", "spider.build_order_matches"],
+            ],
+        )
+        self.assertEqual(commands[2][-2:], ["--id", "1174"])
+
     def test_caizhanyun_failure_does_not_hide_other_statuses(self):
         records = []
 
