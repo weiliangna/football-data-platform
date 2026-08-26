@@ -8,6 +8,7 @@ from config.platform_ingestion_config import (
     require_values,
 )
 from spider.platform_pending import load_pending_order_refs
+from spider.pagination import collect_numbered_pages
 from spider.unified_ingestion import (
     DatabaseRepository,
     as_float,
@@ -481,8 +482,18 @@ def _profile_list_item(profile, ref):
 
 
 def collect_live_items(client, pending_refs, page_size=30):
-    hall_rows = parse_list_response(
-        client.list_orders(page=1, page_size=page_size)
+    hall_rows = collect_numbered_pages(
+        lambda page, size: client.list_orders(
+            page=page,
+            page_size=size,
+        ),
+        parse_list_response,
+        lambda item: item.get("planId"),
+        page_size=page_size,
+        metadata=lambda response: {
+            "has_next": (response or {}).get("hasNext"),
+            "next_page": (response or {}).get("nextPage"),
+        },
     )
     hall_by_id = {
         str(item.get("planId") or ""): item
@@ -520,13 +531,25 @@ def collect_live_items(client, pending_refs, page_size=30):
         ref = pending_by_id.get(source_id) or {}
         list_item = dict(hall_by_id.get(source_id) or {})
         member_id = list_item.get("memberId") or ref.get("user_id")
-        if not list_item:
-            if member_id and member_id not in profiles:
+        if member_id and member_id not in profiles:
+            try:
                 profiles[member_id] = parse_profile_response(
                     client.profile(member_id)
                 )
+            except Exception:
+                profiles[member_id] = {}
+        profile = profiles.get(member_id) or {}
+        if list_item:
+            list_item["name"] = (
+                profile.get("name") or list_item.get("name")
+            )
+            list_item["headImage"] = (
+                profile.get("headImage")
+                or list_item.get("headImage")
+            )
+        if not list_item:
             list_item = _profile_list_item(
-                profiles.get(member_id),
+                profile,
                 ref,
             )
             list_item["planId"] = source_id
@@ -607,7 +630,7 @@ def ingest_responses(
 
 def run_live(
     platform_id=PLATFORM_ID,
-    limit=30,
+    limit=None,
     repository=None,
     client=None,
     pending_refs=None,
@@ -619,7 +642,7 @@ def run_live(
     rows, details = collect_live_items(
         target_client,
         refs,
-        page_size=max(int(limit), 1),
+        page_size=max(int(limit or 50), 1),
     )
     return ingest_items(
         rows,
@@ -637,7 +660,7 @@ def main(argv=None):
     parser.add_argument("--platform-id", type=int, default=PLATFORM_ID)
     parser.add_argument("--list-json")
     parser.add_argument("--history-json")
-    parser.add_argument("--limit", type=int, default=30)
+    parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--live", action="store_true")
     args = parser.parse_args(argv)
@@ -650,7 +673,7 @@ def main(argv=None):
             raise ValueError("好店主线上采集必须显式使用 --write")
         summary = run_live(
             platform_id=args.platform_id,
-            limit=args.limit,
+            limit=args.limit or None,
             repository=repository,
         )
     else:
@@ -661,7 +684,7 @@ def main(argv=None):
             load_json_file(args.history_json),
             platform_id=args.platform_id,
             repository=repository,
-            limit=args.limit,
+            limit=args.limit or None,
         )
 
     print(

@@ -129,6 +129,35 @@ def load_profiles(cursor):
     return result
 
 
+def load_user_statistics(cursor):
+    result = {}
+    try:
+        cursor.execute(
+            """
+            SELECT
+                platform_id,
+                user_id,
+                total_orders,
+                win_orders,
+                lose_orders,
+                hit_rate,
+                roi,
+                follow_num
+            FROM user_statistics
+            """
+        )
+        for row in cursor.fetchall():
+            result[
+                (
+                    intv(row.get("platform_id")),
+                    intv(row.get("user_id")),
+                )
+            ] = dict(row)
+    except Exception:
+        pass
+    return result
+
+
 
 def load_match_schedule(cursor):
     by_code = {}
@@ -764,10 +793,26 @@ def format_match_row(row, alias_map, platform_id):
         ),
     }
 
-def enrich_order(order, matches, alias_map, profiles):
+def enrich_order(
+    order,
+    matches,
+    alias_map,
+    profiles,
+    statistics=None,
+):
     platform_id = intv(order.get("platform_id"))
     user_id = intv(order.get("user_id"))
     profile = profiles.get((platform_id, user_id), {})
+    stat = (statistics or {}).get((platform_id, user_id), {})
+    wins = intv(stat.get("win_orders"))
+    losses = intv(stat.get("lose_orders"))
+    total_orders = intv(stat.get("total_orders"))
+    if wins + losses > 0:
+        history_record = f"{wins}胜{losses}负"
+    elif total_orders > 0:
+        history_record = f"{total_orders}单"
+    else:
+        history_record = "--"
 
     formatted_matches = [
         format_match_row(
@@ -803,6 +848,11 @@ def enrich_order(order, matches, alias_map, profiles):
             or "未知用户"
         ),
         "avatar_url": profile.get("avatar_url") or "",
+        "history_record": history_record,
+        "history_hit_rate": (
+            money(stat.get("hit_rate")) if stat else None
+        ),
+        "history_roi": money(stat.get("roi")) if stat else None,
         "publish_time": (
             order.get("publish_time")
             or order.get("created_time")
@@ -1144,6 +1194,7 @@ def schemes(
         )
         alias_map = load_aliases(cursor)
         profiles = load_profiles(cursor)
+        statistics = load_user_statistics(cursor)
 
         data = [
             enrich_order(
@@ -1151,6 +1202,7 @@ def schemes(
                 grouped.get(intv(order.get("id")), []),
                 alias_map,
                 profiles,
+                statistics,
             )
             for order in orders
         ]

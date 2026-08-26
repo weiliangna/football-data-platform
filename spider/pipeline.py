@@ -156,7 +156,7 @@ def run_hongrui(runtime):
             "-m",
             "spider.hongrui",
             "--limit",
-            "50",
+            "0",
             "--write",
         ]
     )
@@ -180,7 +180,7 @@ def run_zhouyunbao(runtime):
 
     return run_live(
         platform_id=runtime["platform_id"],
-        limit=30,
+        limit=None,
     )
 
 
@@ -189,7 +189,7 @@ def run_yuncai(runtime):
 
     return run_live(
         platform_id=runtime["platform_id"],
-        limit=30,
+        limit=None,
     )
 
 
@@ -198,7 +198,7 @@ def run_haodianzhu(runtime):
 
     return run_live(
         platform_id=runtime["platform_id"],
-        limit=30,
+        limit=None,
     )
 
 
@@ -207,7 +207,7 @@ def run_qishilu(runtime):
 
     return run_live(
         platform_id=runtime["platform_id"],
-        limit=30,
+        limit=None,
     )
 
 

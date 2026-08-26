@@ -10,6 +10,7 @@ from spider.magicangle_contract import (
     parse_list_response as parse_magicangle_list_response,
 )
 from spider.platform_pending import load_pending_order_refs
+from spider.pagination import collect_numbered_pages
 from spider.unified_ingestion import (
     DatabaseRepository,
     ingest_records,
@@ -223,7 +224,7 @@ def ingest_responses(
 
 def run_live(
     platform_id=PLATFORM_ID,
-    limit=30,
+    limit=None,
     repository=None,
     client=None,
     pending_refs=None,
@@ -233,17 +234,26 @@ def run_live(
     refs = pending_refs
     if refs is None:
         refs = load_pending_order_refs(platform_id)
-    list_response = target_client.list_orders(
-        page_num=1,
-        page_size=max(int(limit), 1),
+    page_size = max(int(limit or 10), 1)
+    rows = collect_numbered_pages(
+        lambda page, size: target_client.list_orders(
+            page_num=page,
+            page_size=size,
+        ),
+        parse_list_response,
+        lambda item: item.get("id"),
+        page_size=page_size,
     )
     return ingest_responses(
-        list_response,
+        {
+            "errorCode": "0",
+            "data": {"rankList": rows},
+        },
         lambda source_id, _item: target_client.order_detail(
             source_id
         ),
         repository=target_repository,
-        limit=limit,
+        limit=None,
         platform_id=platform_id,
         pending_refs=refs,
     )
@@ -254,7 +264,7 @@ def main(argv=None):
         description="州运宝采集与已取证响应接管工具"
     )
     parser.add_argument("--platform-id", type=int, default=PLATFORM_ID)
-    parser.add_argument("--limit", type=int, default=30)
+    parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--list-json")
@@ -270,7 +280,7 @@ def main(argv=None):
             raise ValueError("州运宝线上采集必须显式使用 --write")
         summary = run_live(
             platform_id=args.platform_id,
-            limit=args.limit,
+            limit=args.limit or None,
             repository=repository,
         )
     else:
@@ -281,7 +291,7 @@ def main(argv=None):
             load_json_file(args.list_json),
             lambda source_id, _item: details[source_id],
             repository=repository,
-            limit=args.limit,
+            limit=args.limit or None,
             platform_id=args.platform_id,
         )
 

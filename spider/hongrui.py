@@ -243,6 +243,43 @@ def get_follow_orders(
     )
 
 
+def get_all_follow_orders(
+    start_page=1,
+    max_pages=100,
+):
+
+    orders = []
+    seen = set()
+
+    for page in range(
+        max(int(start_page), 1),
+        max(int(start_page), 1) + max(int(max_pages), 1),
+    ):
+
+        page_orders = get_follow_orders(page=page)
+        added = 0
+
+        for item in page_orders:
+
+            order_id = str(
+                item.get("order_id")
+                or item.get("id")
+                or ""
+            ).strip()
+
+            if not order_id or order_id in seen:
+                continue
+
+            seen.add(order_id)
+            orders.append(item)
+            added += 1
+
+        if not page_orders or added == 0:
+            break
+
+    return orders
+
+
 # ============================================================
 # 订单详情
 # ============================================================
@@ -1744,9 +1781,17 @@ def main():
     args = parser.parse_args()
 
 
-    orders = get_follow_orders(
-        page=args.page
-    )
+    if args.limit <= 0:
+
+        orders = get_all_follow_orders(
+            start_page=args.page,
+        )
+
+    else:
+
+        orders = get_follow_orders(
+            page=args.page
+        )
 
 
     if args.order_id:
@@ -1769,9 +1814,11 @@ def main():
         ]
 
 
-    orders = orders[
-        :args.limit
-    ]
+    if args.limit > 0:
+
+        orders = orders[
+            :args.limit
+        ]
 
 
     print(

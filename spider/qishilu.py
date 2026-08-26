@@ -7,6 +7,7 @@ from config.platform_ingestion_config import (
     require_values,
 )
 from spider.platform_pending import load_pending_order_refs
+from spider.pagination import collect_numbered_pages
 from spider.unified_ingestion import (
     DatabaseRepository,
     as_float,
@@ -373,9 +374,27 @@ def _merge_live_items(client, rows, pending_refs):
     seen = set()
     profiles = {}
 
-    for item in rows:
+    for source in rows:
+        item = dict(source)
         source_id = str(item.get("proId") or "").strip()
         if source_id and source_id not in seen:
+            user_id = item.get("userId")
+            if user_id not in (None, "", 0):
+                if user_id not in profiles:
+                    try:
+                        profiles[user_id] = parse_profile_response(
+                            client.user_profile(user_id)
+                        )
+                    except Exception:
+                        profiles[user_id] = {}
+                profile = profiles[user_id]
+                item["userName"] = (
+                    profile.get("userName")
+                    or item.get("userName")
+                )
+                item["avatar"] = (
+                    profile.get("avatar") or item.get("avatar")
+                )
             seen.add(source_id)
             merged.append(item)
 
@@ -443,7 +462,7 @@ def ingest_responses(
 
 def run_live(
     platform_id=PLATFORM_ID,
-    limit=30,
+    limit=None,
     repository=None,
     client=None,
     pending_refs=None,
@@ -452,13 +471,22 @@ def run_live(
     refs = pending_refs
     if refs is None:
         refs = load_pending_order_refs(platform_id)
-    list_response = target_client.list_orders(
-        page_num=1,
-        page_size=max(int(limit), 1),
+    page_size = max(int(limit or 50), 1)
+    rows = collect_numbered_pages(
+        lambda page, size: target_client.list_orders(
+            page_num=page,
+            page_size=size,
+        ),
+        parse_list_response,
+        lambda item: item.get("proId"),
+        page_size=page_size,
+        metadata=lambda response: {
+            "total": (response or {}).get("total"),
+        },
     )
     rows = _merge_live_items(
         target_client,
-        parse_list_response(list_response),
+        rows,
         refs,
     )
     wrapped = {
@@ -483,7 +511,7 @@ def main(argv=None):
     parser.add_argument("--platform-id", type=int, default=PLATFORM_ID)
     parser.add_argument("--list-json")
     parser.add_argument("--details-json")
-    parser.add_argument("--limit", type=int, default=30)
+    parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--live", action="store_true")
     args = parser.parse_args(argv)
@@ -496,7 +524,7 @@ def main(argv=None):
             raise ValueError("启示录线上采集必须显式使用 --write")
         summary = run_live(
             platform_id=args.platform_id,
-            limit=args.limit,
+            limit=args.limit or None,
             repository=repository,
         )
     else:
@@ -508,7 +536,7 @@ def main(argv=None):
             lambda source_id, _item: details[source_id],
             platform_id=args.platform_id,
             repository=repository,
-            limit=args.limit,
+            limit=args.limit or None,
         )
 
     print(
