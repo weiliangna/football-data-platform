@@ -1,171 +1,22 @@
 <template>
-  <section class="page-shell user-detail-page">
-    <header class="profile-hero">
-      <div class="profile-main">
-        <img v-if="user.avatar_url" class="profile-avatar" :src="user.avatar_url" alt="">
-        <span v-else class="profile-avatar-fallback">{{ avatarText(user.nickname) }}</span>
-        <div>
-          <span>FEATURED SENDER</span>
-          <h1>{{ user.nickname || "用户详情" }}</h1>
-          <small>{{ user.platform_name || "-" }} · ID {{ user.user_id || "-" }}</small>
-        </div>
-      </div>
-      <button class="secondary-button" type="button" @click="router.back()">← 返回</button>
-    </header>
-
-    <section class="profile-kpis">
-      <article><span>历史战绩</span><strong>{{ user.win_orders || 0 }}胜{{ user.lose_orders || 0 }}负</strong><small>命中率 {{ percent(user.hit_rate) }}</small></article>
-      <article><span>自购金额</span><strong>¥{{ money(user.total_stake) }}</strong><small>累计投注</small></article>
-      <article><span>跟单人数</span><strong>{{ number(user.follow_num) }}</strong><small>累计人次</small></article>
-      <article><span>累计盈利</span><strong :class="Number(user.total_profit || 0) >= 0 ? 'money-positive' : 'money-negative'">{{ profit(user.total_profit) }}</strong><small>ROI {{ percent(user.roi) }}</small></article>
-    </section>
-
-    <section class="history-head">
-      <div><p>HISTORY ORDERS</p><h2>历史发单</h2></div>
-      <span>赛果同步后，投注项会按赢、输、待开奖分别标记</span>
-    </section>
-
-    <section v-if="error" class="panel error-state">
-      <div class="state-stack"><span class="state-symbol">!</span><b>{{ error }}</b></div>
-    </section>
-
-    <section v-else class="history-list">
-      <article v-for="order in orders" :key="order.id" class="history-order panel">
-        <header>
-          <div><b>{{ order.pass_composition || passText(order) }}</b><span>{{ time(order.publish_time) }}</span></div>
-          <div class="history-money"><strong>¥{{ money(order.stake) }}</strong><small>自购</small></div>
-          <div class="history-money bonus"><strong>¥{{ money(order.bonus) }}</strong><small>中奖金额</small></div>
-        </header>
-
-        <div class="history-lines">
-          <div v-for="match in order.matches" :key="match.id" class="history-line">
-            <div><b>{{ match.match_code || "-" }} · {{ match.home }} <i>VS</i> {{ match.away }}</b><small>{{ match.league || "竞彩足球" }}</small></div>
-            <div class="history-bet"><span>{{ match.play_type }}：</span><b :class="resultClass(match.result)">{{ match.selection }}</b></div>
-            <div class="history-score"><b :class="resultClass(match.result)">{{ match.result }}</b><small>{{ scoreText(match) }}</small></div>
-          </div>
-        </div>
-
-        <footer>
-          <span>SP {{ order.odds_text || "-" }}</span><span>跟单 {{ number(order.follow_num) }} 人</span>
-          <button class="secondary-button" type="button" @click="router.push('/order/detail/' + order.id)">订单详情 ↗</button>
-        </footer>
-      </article>
-
-      <div v-if="!orders.length" class="panel empty-state">暂无历史发单</div>
-    </section>
+  <section class="page-shell">
+    <header class="page-header"><div><button class="back-link" type="button" @click="router.back()">← 返回</button><h1>用户详情</h1><p>平台用户档案与历史方案</p></div></header>
+    <LoadingSkeleton v-if="loading" type="cards" :count="4" />
+    <ErrorState v-else-if="error" class="app-card" :description="error" @retry="load" />
+    <template v-else>
+      <section class="profile-card app-card"><img v-if="user.avatar_url" class="profile-avatar" :src="user.avatar_url" alt=""><span v-else class="profile-avatar avatar-fallback">{{ avatarText(user.nickname) }}</span><div><span class="eyebrow">User profile</span><h2>{{ user.nickname || "--" }}</h2><p>{{ user.platform_name || "--" }} · ID {{ user.user_id || "--" }}</p></div><span class="score-tag">综合评分 {{ fixed(user.expert_score) }}</span></section>
+      <section class="profile-kpis"><article class="app-card"><span>历史战绩</span><strong>{{ number(user.win_orders) }}胜 {{ number(user.lose_orders) }}负</strong><small>命中率 {{ percent(user.hit_rate) }}</small></article><article class="app-card"><span>自购金额</span><strong>¥{{ money(user.total_stake) }}</strong><small>累计投注</small></article><article class="app-card"><span>跟单人数</span><strong>{{ number(user.follow_num) }}</strong><small>累计人次</small></article><article class="app-card"><span>累计盈利</span><strong :class="Number(user.total_profit)>=0?'money-positive':'money-negative'">{{ profit(user.total_profit) }}</strong><small>ROI {{ percent(user.roi) }}</small></article></section>
+      <section class="history-card app-card"><header class="section-header"><div><h2>历史订单</h2><p>接口返回的用户方案记录</p></div><span>{{ orders.length }} 条</span></header><div v-if="orders.length" class="history-list"><article v-for="order in orders" :key="order.id" tabindex="0" @click="openOrder(order.id)" @keyup.enter="openOrder(order.id)"><header><div><b>{{ order.platform_order_id || order.id || "--" }}</b><small>{{ time(order.publish_time) }}</small></div><span :class="resultClass(order.result)">{{ resultText(order.result) }}</span></header><div class="history-facts"><span>串关 <b>{{ order.pass_composition || passText(order) }}</b></span><span>自购 <b>¥{{ money(order.stake) }}</b></span><span>中奖 <b>¥{{ money(order.bonus) }}</b></span></div><div class="history-matches"><div v-for="match in order.matches||[]" :key="match.id"><b>{{ match.match_code || "--" }} · {{ match.home || "--" }} VS {{ match.away || "--" }}</b><span>{{ match.play_type || "--" }} · {{ match.selection || "--" }} · {{ match.result || "待开奖" }} {{ scoreText(match) }}</span></div></div></article></div><EmptyState v-else title="暂无历史订单" description="该用户暂时没有可展示的方案记录" /></section>
+    </template>
   </section>
 </template>
-
 <script setup>
-import { onMounted, ref, watch } from "vue"
-import { useRoute, useRouter } from "vue-router"
-import axios from "axios"
-
-const route = useRoute()
-const router = useRouter()
-const user = ref({})
-const orders = ref([])
-const error = ref("")
-
-async function load() {
-  error.value = ""
-  try {
-    const response = await axios.get("/api/portal/user/" + route.params.platform + "/" + route.params.id)
-    if (!response.data || response.data.code !== 200) {
-      throw new Error("user unavailable")
-    }
-    user.value = response.data.data.user || {}
-    orders.value = response.data.data.orders || []
-  } catch {
-    error.value = "用户详情暂时无法读取，请稍后重试。"
-  }
-}
-
-function avatarText(name) { return String(name || "球").slice(-1) }
-function number(value) { return Math.round(Number(value || 0)).toLocaleString("zh-CN") }
-function money(value) { return Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 2 }) }
-function percent(value) { return Number(value || 0).toFixed(2) + "%" }
-function profit(value) {
-  const amount = Number(value || 0)
-  if (amount > 0) return "+¥" + money(amount)
-  if (amount < 0) return "-¥" + money(Math.abs(amount))
-  return "¥0"
-}
-function time(value) { return value ? String(value).replace("T", " ").replace("Z", "") : "-" }
-function passText(order) { const count = Number(order.bet_count || 0); const pass = order.pass_summary || "-"; return count > 0 ? count + "注" + pass : pass }
-function resultClass(value) { return value === "赢" ? "option-win" : value === "输" ? "option-loss" : "option-pending" }
-function scoreText(match) {
-  if (match.home_score === null || match.home_score === undefined || match.away_score === null || match.away_score === undefined) return "待同步"
-  let text = match.home_score + ":" + match.away_score
-  if (match.half_home_score !== null && match.half_home_score !== undefined && match.half_away_score !== null && match.half_away_score !== undefined) {
-    text += " / 半 " + match.half_home_score + ":" + match.half_away_score
-  }
-  return text
-}
-
-watch(() => route.fullPath, load)
-onMounted(load)
+import { onMounted,ref,watch } from "vue";import { useRoute,useRouter } from "vue-router";import axios from "axios";import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue";import EmptyState from "../components/ui/EmptyState.vue";import ErrorState from "../components/ui/ErrorState.vue"
+const route=useRoute(),router=useRouter(),user=ref({}),orders=ref([]),loading=ref(true),error=ref("")
+async function load(){loading.value=true;error.value="";try{const r=await axios.get("/api/portal/user/"+route.params.platform+"/"+route.params.id);if(!r.data||r.data.code!==200)throw new Error();user.value=r.data.data.user||{};orders.value=r.data.data.orders||[]}catch{user.value={};orders.value=[];error.value="用户详情暂时无法读取，请稍后重试或检查接口连接状态"}finally{loading.value=false}}
+function openOrder(id){router.push("/order/detail/"+id)}function avatarText(v){return String(v||"球").slice(-1)}function number(v){return Math.round(Number(v||0)).toLocaleString("zh-CN")}function money(v){return Number(v||0).toLocaleString("zh-CN",{maximumFractionDigits:2})}function fixed(v){return v===null||v===undefined?"--":Number(v).toFixed(2)}function percent(v){return v===null||v===undefined?"--":Number(v).toFixed(2)+"%"}function profit(v){const n=Number(v||0);return(n>0?"+¥":n<0?"-¥":"¥")+money(Math.abs(n))}function time(v){return v?String(v).replace("T"," ").replace("Z",""):"--"}function passText(o){const c=Number(o.bet_count||0),p=o.pass_summary||"--";return c>0?c+"注"+p:p}function resultText(v){return v==="赢"?"已中奖":v==="输"?"未中奖":v||"待开奖"}function resultClass(v){return "status-chip "+(v==="赢"?"success":v==="输"?"danger":"warning")}function scoreText(m){return m.home_score===null||m.home_score===undefined||m.away_score===null||m.away_score===undefined?"":"· "+m.home_score+":"+m.away_score}
+watch(()=>route.fullPath,load);onMounted(load)
 </script>
-
 <style scoped>
-.profile-hero { min-height: 190px; padding: 29px; border: 1px solid rgba(184,255,56,.28); border-radius: var(--radius-xl); display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; background: radial-gradient(circle at 90% 20%,rgba(184,255,56,.16),transparent 24%),linear-gradient(145deg,#193224,#0f1912); box-shadow: var(--shadow); }
-.profile-main { display: flex; align-items: center; gap: 14px; }
-.profile-avatar,
-.profile-avatar-fallback { width: 67px; height: 67px; border-radius: 50%; }
-.profile-avatar { object-fit: cover; border: 2px solid rgba(184,255,56,.35); }
-.profile-avatar-fallback { display: grid; place-items: center; color: #07110b; background: linear-gradient(145deg,var(--mint),var(--lime)); font-size: 22px; font-weight: 900; }
-.profile-main span { color: var(--mint); font-size: 8px; font-weight: 900; letter-spacing: .15em; }
-.profile-main h1 { margin: 6px 0 4px; font-size: 33px; }
-.profile-main small { color: #93a696; font-size: 9px; }
-.profile-kpis { margin-top: 15px; display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; }
-.profile-kpis article { padding: 15px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-soft); }
-.profile-kpis span,
-.profile-kpis strong,
-.profile-kpis small { display: block; }
-.profile-kpis span,
-.profile-kpis small { color: var(--muted); font-size: 8px; }
-.profile-kpis strong { margin: 6px 0 4px; font-size: 17px; }
-.history-head { margin: 27px 0 12px; display: flex; align-items: flex-end; justify-content: space-between; }
-.history-head p { margin: 0; color: var(--lime); font-size: 8px; font-weight: 900; letter-spacing: .16em; }
-.history-head h2 { margin: 5px 0 0; }
-.history-head > span { color: var(--muted); font-size: 9px; }
-.history-list { display: grid; gap: 12px; }
-.history-order { padding: 15px; }
-.history-order > header { display: grid; grid-template-columns: minmax(0,1fr) 140px 140px; gap: 12px; align-items: center; }
-.history-order > header div:first-child b,
-.history-order > header div:first-child span { display: block; }
-.history-order > header div:first-child span { margin-top: 4px; color: var(--muted); font-size: 8px; }
-.history-money { text-align: right; }
-.history-money strong,
-.history-money small { display: block; }
-.history-money strong { color: var(--lime); }
-.history-money small { color: var(--muted); font-size: 8px; }
-.bonus strong { color: var(--mint); }
-.history-lines { margin-top: 12px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: #0e130f; }
-.history-line { padding: 11px 13px; display: grid; grid-template-columns: minmax(320px,1.4fr) minmax(240px,1fr) 140px; gap: 12px; align-items: center; border-bottom: 1px solid var(--line); }
-.history-line:last-child { border-bottom: 0; }
-.history-line > div:first-child b,
-.history-line > div:first-child small,
-.history-score b,
-.history-score small { display: block; }
-.history-line > div:first-child b i { margin: 0 5px; color: var(--lime); font-size: 8px; font-style: normal; }
-.history-line > div:first-child small,
-.history-score small { margin-top: 3px; color: var(--muted); font-size: 8px; }
-.history-score { text-align: right; }
-.history-order > footer { margin-top: 11px; display: flex; align-items: center; justify-content: flex-end; gap: 13px; color: var(--muted); font-size: 8px; }
-
-@media (max-width: 850px) {
-  .profile-kpis { grid-template-columns: repeat(2,1fr); }
-  .history-order > header,
-  .history-line { grid-template-columns: 1fr; }
-  .history-money,
-  .history-score { text-align: left; }
-}
-
-@media (max-width: 540px) {
-  .profile-hero { padding: 20px; }
-  .profile-kpis { grid-template-columns: 1fr; }
-  .history-head { align-items: flex-start; flex-direction: column; gap: 7px; }
-  .history-order > footer { align-items: flex-start; flex-direction: column; }
-}
+.back-link{margin-bottom:9px;padding:0;border:0;color:var(--text-secondary);background:transparent;font-size:12px}.profile-card{min-height:135px;padding:22px;display:flex;align-items:center;gap:14px}.profile-avatar{width:66px;height:66px;flex:0 0 66px;border-radius:50%;object-fit:cover}.profile-card>div{min-width:0;flex:1}.profile-card h2{margin:0;font-size:23px}.profile-card p{margin:5px 0 0;color:var(--text-muted);font-size:12px}.score-tag{padding:7px 10px;border-radius:9px;background:var(--accent-soft);font-size:11px;font-weight:650}.profile-kpis{margin-top:13px;display:grid;grid-template-columns:repeat(4,1fr);gap:11px}.profile-kpis article{padding:17px}.profile-kpis span,.profile-kpis strong,.profile-kpis small{display:block}.profile-kpis span,.profile-kpis small{color:var(--text-muted);font-size:10px}.profile-kpis strong{margin:8px 0 5px;font-size:17px}.history-card{margin-top:14px;padding:19px}.history-card>.section-header>span{color:var(--text-muted);font-size:11px}.history-list{margin-top:14px;display:grid;gap:9px}.history-list>article{padding:14px;border:1px solid var(--border);border-radius:13px;cursor:pointer;transition:border-color 150ms,box-shadow 150ms}.history-list>article:hover{border-color:var(--border-strong);box-shadow:var(--shadow-card)}.history-list article>header{display:flex;justify-content:space-between;gap:10px}.history-list header b,.history-list header small{display:block}.history-list header small{margin-top:4px;color:var(--text-muted);font-size:10px}.history-facts{margin:11px 0;padding:9px;display:flex;flex-wrap:wrap;gap:18px;border-radius:9px;background:var(--surface-soft);color:var(--text-muted);font-size:10px}.history-facts b{color:var(--text-main)}.history-matches{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}.history-matches>div{padding:9px;border-left:2px solid var(--accent);background:#fafbf4}.history-matches b,.history-matches span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.history-matches b{font-size:11px}.history-matches span{margin-top:3px;color:var(--text-muted);font-size:9px}@media(max-width:850px){.profile-kpis{grid-template-columns:repeat(2,1fr)}.history-matches{grid-template-columns:1fr}}@media(max-width:520px){.profile-card{align-items:flex-start;flex-wrap:wrap}.score-tag{margin-left:80px}.profile-kpis{grid-template-columns:1fr}}
 </style>

@@ -1,109 +1,21 @@
 <template>
-  <section class="page-shell results-page">
-    <header class="page-title">
-      <div>
-        <p>RESULT ARCHIVE</p>
-        <h1>赛果统计</h1>
-        <span>统一展示标准化球队名称、全场比分与半场比分</span>
-      </div>
-      <button class="secondary-button" type="button" @click="load">刷新赛果</button>
-    </header>
-
-    <section class="results-panel panel">
-      <header class="results-head">
-        <span>场次</span><span>对阵</span><span>全场</span><span>半场</span><span>结束时间</span>
-      </header>
-
-      <article v-for="item in rows" :key="item.id" class="result-row">
-        <span class="match-code">{{ item.match_code || "-" }}</span>
-        <b>{{ item.home }} <i>VS</i> {{ item.away }}</b>
-        <strong class="score">{{ item.home_score }} : {{ item.away_score }}</strong>
-        <span>{{ halfScore(item) }}</span>
-        <small>{{ time(item.finished_time) }}</small>
-      </article>
-
-      <div v-if="error" class="error-state">
-        <div class="state-stack"><span class="state-symbol">!</span><b>{{ error }}</b></div>
-      </div>
-
-      <div v-else-if="!rows.length" class="empty-state">
-        <div class="state-stack">
-          <img class="empty-logo" src="/football-ai-logo.png" alt="">
-          <b>暂无已同步赛果</b>
-        </div>
-      </div>
-    </section>
-
-    <div class="pager">
-      <button class="secondary-button" type="button" :disabled="page <= 1" @click="changePage(page - 1)">← 上一页</button>
-      <span>第 <b>{{ page }}</b> / {{ pages }} 页</span>
-      <button class="secondary-button" type="button" :disabled="page >= pages" @click="changePage(page + 1)">下一页 →</button>
-    </div>
+  <section class="page-shell">
+    <header class="page-header"><div><h1>赛果统计</h1><p>标准化球队名称、全场比分与半场比分</p></div><div class="page-actions"><button class="secondary-button" type="button" :disabled="!filteredRows.length" @click="exportRows">导出</button><button class="primary-button" type="button" @click="load">刷新</button></div></header>
+    <section class="toolbar app-card"><input v-model="month" type="month" aria-label="月份"><input v-model.trim="keyword" class="search" type="search" placeholder="搜索场次或球队"><select v-model="status" aria-label="状态"><option value="">全部状态</option><option value="finished">已完赛</option></select></section>
+    <section class="results-card app-card">
+      <LoadingSkeleton v-if="loading" :count="8" /><ErrorState v-else-if="error" :description="error" @retry="load" /><EmptyState v-else-if="!filteredRows.length" title="暂无赛果" description="当前月份或搜索条件下没有赛果数据" />
+      <div v-else class="table-wrap"><table class="data-table results-table"><thead><tr><th>场次</th><th>对阵</th><th>全场比分</th><th>半场比分</th><th>状态</th><th>结束时间</th></tr></thead><tbody><tr v-for="item in filteredRows" :key="item.id"><td><span class="match-code">{{ item.match_code || "--" }}</span></td><td><b class="teams">{{ item.home || "--" }} <i>VS</i> {{ item.away || "--" }}</b></td><td><strong class="score-value">{{ score(item) }}</strong></td><td>{{ halfScore(item) }}</td><td><span class="status-chip success">已完赛</span></td><td>{{ time(item.finished_time) }}</td></tr></tbody></table></div>
+    </section><AppPagination :page="page" :pages="pages" :disabled="loading" @change="changePage" />
   </section>
 </template>
-
 <script setup>
-import { onMounted, ref } from "vue"
-import axios from "axios"
-
-const rows = ref([])
-const page = ref(1)
-const pages = ref(1)
-const error = ref("")
-
-async function load() {
-  error.value = ""
-  try {
-    const response = await axios.get("/api/portal/results", { params: { page: page.value, page_size: 50 } })
-    if (!response.data || response.data.code !== 200) {
-      throw new Error("results unavailable")
-    }
-    rows.value = response.data.data || []
-    pages.value = response.data.pages || 1
-  } catch {
-    rows.value = []
-    error.value = "赛果数据暂时无法读取，请稍后重试。"
-  }
-}
-
-function changePage(value) {
-  page.value = value
-  load()
-}
-
-function halfScore(item) {
-  if (item.half_home_score === null || item.half_home_score === undefined) {
-    return "-"
-  }
-  return item.half_home_score + " : " + item.half_away_score
-}
-
-function time(value) {
-  return value ? String(value).replace("T", " ").replace("Z", "") : "-"
-}
-
-onMounted(load)
+import { computed,onMounted,ref } from "vue";import axios from "axios";import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue";import EmptyState from "../components/ui/EmptyState.vue";import ErrorState from "../components/ui/ErrorState.vue";import AppPagination from "../components/ui/AppPagination.vue";import { downloadExcel,stamp } from "../utils/export.js"
+const rows=ref([]),page=ref(1),pages=ref(1),loading=ref(true),error=ref(""),month=ref(""),keyword=ref(""),status=ref("")
+const filteredRows=computed(()=>{const q=keyword.value.toLowerCase();return rows.value.filter(item=>(!month.value||String(item.finished_time||"").startsWith(month.value))&&(!q||[item.match_code,item.home,item.away].some(v=>String(v||"").toLowerCase().includes(q))))})
+async function load(){loading.value=true;error.value="";try{const r=await axios.get("/api/portal/results",{params:{page:page.value,page_size:50}});if(!r.data||r.data.code!==200)throw new Error();rows.value=r.data.data||[];pages.value=r.data.pages||1}catch{rows.value=[];error.value="赛果数据暂时无法读取，请稍后重试或检查接口连接状态"}finally{loading.value=false}}
+function changePage(v){page.value=v;load()} function score(i){return i.home_score===null||i.home_score===undefined||i.away_score===null||i.away_score===undefined?"--":i.home_score+" : "+i.away_score} function halfScore(i){return i.half_home_score===null||i.half_home_score===undefined||i.half_away_score===null||i.half_away_score===undefined?"--":i.half_home_score+" : "+i.half_away_score} function time(v){return v?String(v).replace("T"," ").replace("Z",""):"--"}
+function exportRows(){downloadExcel("赛果统计",["场次","主队","客队","全场比分","半场比分","结束时间"],filteredRows.value.map(i=>[i.match_code||"",i.home||"",i.away||"",score(i),halfScore(i),time(i.finished_time)]),stamp("football-results"))} onMounted(load)
 </script>
-
 <style scoped>
-.results-panel { overflow: hidden; }
-.results-head,
-.result-row { display: grid; grid-template-columns: minmax(90px,.55fr) minmax(260px,1.5fr) minmax(100px,.65fr) minmax(90px,.55fr) minmax(160px,.9fr); gap: 13px; align-items: center; }
-.results-head { min-height: 42px; padding: 0 16px; color: var(--muted-2); background: #0e130f; font-size: 8px; font-weight: 900; }
-.result-row { min-height: 66px; padding: 12px 16px; border-top: 1px solid var(--line); color: #a9b4aa; font-size: 10px; }
-.result-row:hover { background: rgba(184,255,56,.025); }
-.result-row > b { color: var(--text-soft); font-size: 11px; }
-.result-row > b i { margin: 0 6px; color: var(--lime); font-size: 8px; font-style: normal; }
-.match-code { width: fit-content; padding: 5px 8px; border-radius: 999px; color: var(--mint); background: var(--mint-soft); font-size: 8px; font-weight: 900; }
-.score { color: var(--lime); font-size: 18px; }
-.result-row small { color: var(--muted); }
-.empty-logo { width: 82px; opacity: .72; }
-.pager { margin-top: 16px; display: flex; justify-content: center; align-items: center; gap: 11px; color: var(--muted); font-size: 9px; }
-.pager b { color: var(--lime); }
-
-@media (max-width: 760px) {
-  .results-panel { overflow-x: auto; }
-  .results-head,
-  .result-row { min-width: 760px; }
-}
+.toolbar .search{min-width:260px;flex:1}.results-card{margin-top:14px;overflow:hidden}.results-table{min-width:820px}.match-code{padding:5px 8px;border-radius:8px;color:#68790e;background:var(--accent-soft);font-size:11px;font-weight:700}.teams{color:var(--text-main);font-size:13px}.teams i{margin:0 6px;color:var(--text-muted);font-size:9px;font-style:normal}.score-value{color:var(--text-main);font-size:18px}@media(max-width:600px){.toolbar>*{width:100%}.toolbar .search{min-width:0}}
 </style>

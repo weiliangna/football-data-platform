@@ -1,177 +1,28 @@
 <template>
-  <section class="page-shell analysis-page">
-    <header class="page-title">
-      <div>
-        <p>MATCH EVIDENCE</p>
-        <h1>赛事分析</h1>
-        <span>赛事日 {{ data.day || "待同步" }} · 仅使用未截止方案作为分析证据</span>
-      </div>
-      <button class="secondary-button" type="button" @click="load">刷新分析</button>
-    </header>
-
-    <section class="analysis-summary panel">
-      <article>
-        <span class="summary-icon">◎</span>
-        <div><small>未截止方案</small><strong>{{ number(data.unexpired_orders) }}</strong></div>
-      </article>
-      <article>
-        <span class="summary-icon mint">◫</span>
-        <div><small>分析场次</small><strong>{{ number((data.matches || []).length) }}</strong></div>
-      </article>
-      <article>
-        <span class="summary-icon amber">◇</span>
-        <div><small>覆盖玩法</small><strong>{{ plays.length }}</strong></div>
-      </article>
-    </section>
-
-    <section v-if="error" class="panel error-state">
-      <div class="state-stack">
-        <span class="state-symbol">!</span><b>{{ error }}</b>
-        <button class="secondary-button" type="button" @click="load">重新加载</button>
-      </div>
-    </section>
-
-    <section v-else class="match-analysis-list">
-      <article
-        v-for="match in data.matches || []"
-        :key="match.match_code + match.match_name"
-        class="match-analysis panel"
-      >
-        <header>
-          <div>
-            <span class="match-code">{{ match.match_code || "-" }}</span>
-            <b>{{ match.match_name }}</b>
-            <small>{{ match.league || "竞彩足球" }}</small>
-          </div>
-          <span class="evidence-tag">LIVE EVIDENCE</span>
-        </header>
-
-        <div class="play-evidence">
-          <article v-for="play in plays" :key="play">
-            <h3>{{ play }}</h3>
-            <div
-              v-if="match.plays && match.plays[play] && match.plays[play].length"
-              class="evidence-options"
-            >
-              <div v-for="option in match.plays[play]" :key="option.option">
-                <span>{{ option.option }}</span>
-                <strong>{{ option.share }}%</strong>
-                <i :style="{ width: Math.min(100, Number(option.share || 0)) + '%' }"></i>
-                <small>{{ option.count }} 次</small>
-              </div>
-            </div>
-            <div v-else class="no-evidence">暂无采集数据</div>
-          </article>
-        </div>
-      </article>
-
-      <div v-if="!(data.matches || []).length" class="panel empty-state">
-        <div class="state-stack">
-          <img class="empty-logo" src="/football-ai-logo.png" alt="">
-          <b>今日暂无可分析的未截止方案</b>
-        </div>
-      </div>
-    </section>
+  <section class="page-shell">
+    <header class="page-header"><div><h1>赛事分析</h1><p>仅使用未截止方案作为分析证据</p></div><button class="primary-button" type="button" @click="load">刷新分析</button></header>
+    <section class="toolbar app-card"><input class="field" :value="data.day || ''" placeholder="赛事日期待同步" readonly aria-label="赛事日期"><select v-model="selectedPlay" aria-label="玩法筛选"><option value="">全部玩法</option><option v-for="play in plays" :key="play" :value="play">{{ play }}</option></select><select disabled aria-label="等级筛选"><option>等级字段未提供</option></select></section>
+    <LoadingSkeleton v-if="loading" class="section-gap" type="cards" :count="3" />
+    <ErrorState v-else-if="error" class="app-card section-gap" :description="error" @retry="load" />
+    <template v-else>
+      <section class="stats-grid section-gap"><article class="app-card"><span>未截止方案</span><strong>{{ number(data.unexpired_orders) }}</strong></article><article class="app-card"><span>分析场次</span><strong>{{ number((data.matches||[]).length) }}</strong></article><article class="app-card"><span>覆盖玩法</span><strong>{{ playCount }}</strong></article></section>
+      <section v-if="(data.matches||[]).length" class="match-list">
+        <article v-for="match in data.matches" :key="match.match_code+match.match_name" class="match-card app-card lift-card">
+          <header><div><span class="match-code">{{ match.match_code || "--" }}</span><small>{{ match.league || "--" }}</small></div><h2>{{ match.match_name || "--" }}</h2><div class="match-meta"><span>让球 {{ match.handicap ?? "--" }}</span><span>状态 {{ match.status || "--" }}</span></div></header>
+          <div class="play-grid"><article v-for="play in visiblePlays" :key="play"><h3>{{ play }}</h3><div v-if="match.plays&&match.plays[play]&&match.plays[play].length" class="options"><div v-for="option in match.plays[play]" :key="option.option" :class="{peak:isPeak(match.plays[play],option)}"><header><span>{{ option.option || "--" }}</span><b>{{ option.share ?? "--" }}%</b></header><div><i :style="{width:Math.min(100,Number(option.share||0))+'%'}"></i></div><small>{{ number(option.count) }} 次</small></div></div><EmptyState v-else title="暂无采集数据" description="该玩法暂无可用投注项" /></article></div>
+        </article>
+      </section>
+      <EmptyState v-else class="app-card section-gap" title="暂无赛事分析" description="今日没有可分析的未截止方案" />
+    </template>
   </section>
 </template>
-
 <script setup>
-import { onMounted, ref } from "vue"
-import axios from "axios"
-
-const plays = ["胜平负", "让球胜平负", "半全场", "比分"]
-const data = ref({})
-const error = ref("")
-
-async function load() {
-  error.value = ""
-  try {
-    const response = await axios.get("/api/portal/analysis")
-    if (!response.data || response.data.code !== 200) {
-      throw new Error("analysis unavailable")
-    }
-    data.value = response.data.data || {}
-  } catch {
-    error.value = "赛事分析暂时无法读取，请稍后重试。"
-  }
-}
-
-function number(value) {
-  return Math.round(Number(value || 0)).toLocaleString("zh-CN")
-}
-
-onMounted(load)
+import { computed,onMounted,ref } from "vue";import axios from "axios";import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue";import EmptyState from "../components/ui/EmptyState.vue";import ErrorState from "../components/ui/ErrorState.vue"
+const plays=["胜平负","让球胜平负","半全场","比分"],selectedPlay=ref(""),data=ref({}),loading=ref(true),error=ref("")
+const visiblePlays=computed(()=>selectedPlay.value?[selectedPlay.value]:plays),playCount=computed(()=>{const set=new Set();(data.value.matches||[]).forEach(m=>Object.keys(m.plays||{}).forEach(p=>{if((m.plays[p]||[]).length)set.add(p)}));return set.size})
+async function load(){loading.value=true;error.value="";try{const r=await axios.get("/api/portal/analysis");if(!r.data||r.data.code!==200)throw new Error();data.value=r.data.data||{}}catch{data.value={};error.value="赛事分析暂时无法读取，请稍后重试或检查接口连接状态"}finally{loading.value=false}}
+function number(v){return Math.round(Number(v||0)).toLocaleString("zh-CN")} function isPeak(rows,item){return Number(item.share||0)===Math.max(...rows.map(r=>Number(r.share||0)))} onMounted(load)
 </script>
-
 <style scoped>
-.analysis-summary {
-  padding: 13px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-}
-
-.analysis-summary article {
-  min-height: 88px;
-  padding: 13px;
-  border: 1px solid rgba(184, 255, 56, .08);
-  border-radius: 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: var(--surface-2);
-}
-
-.summary-icon {
-  width: 43px;
-  height: 43px;
-  border-radius: 14px;
-  display: grid;
-  place-items: center;
-  color: #07110b;
-  background: var(--lime);
-  font-weight: 900;
-}
-
-.summary-icon.mint { background: var(--mint); }
-.summary-icon.amber { background: var(--amber); }
-
-.analysis-summary small,
-.analysis-summary strong { display: block; }
-.analysis-summary small { color: var(--muted); font-size: 9px; }
-.analysis-summary strong { margin-top: 3px; font-size: 22px; }
-
-.match-analysis-list { margin-top: 15px; display: grid; gap: 12px; }
-.match-analysis { padding: 18px; }
-.match-analysis > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.match-analysis header b,
-.match-analysis header small { display: block; }
-.match-analysis header b { margin-top: 7px; font-size: 15px; }
-.match-analysis header small { margin-top: 4px; color: var(--muted); font-size: 8px; }
-.match-code { padding: 4px 8px; border-radius: 999px; color: var(--lime); background: var(--lime-soft); font-size: 8px; font-weight: 900; }
-.evidence-tag { color: var(--mint); font-size: 8px; font-weight: 900; letter-spacing: .14em; }
-
-.play-evidence { margin-top: 15px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
-.play-evidence > article { min-height: 165px; padding: 13px; border: 1px solid var(--line); border-radius: 15px; background: #0e130f; }
-.play-evidence h3 { margin: 0; color: var(--text-soft); font-size: 11px; }
-.evidence-options { margin-top: 9px; display: grid; gap: 6px; }
-.evidence-options > div { position: relative; padding: 8px; border-radius: 10px; overflow: hidden; background: var(--surface-2); }
-.evidence-options span,
-.evidence-options strong,
-.evidence-options small { position: relative; z-index: 2; display: block; }
-.evidence-options span { color: #a6b1a7; font-size: 8px; }
-.evidence-options strong { margin-top: 2px; color: var(--lime); }
-.evidence-options small { color: var(--muted); font-size: 7px; }
-.evidence-options i { position: absolute; inset: auto 0 0; height: 3px; background: linear-gradient(90deg, var(--mint), var(--lime)); }
-.no-evidence { min-height: 116px; display: grid; place-items: center; color: var(--muted); font-size: 8px; }
-.empty-logo { width: 82px; opacity: .7; }
-
-@media (max-width: 1000px) {
-  .play-evidence { grid-template-columns: repeat(2, 1fr); }
-}
-
-@media (max-width: 600px) {
-  .analysis-summary,
-  .play-evidence { grid-template-columns: 1fr; }
-}
+.section-gap{margin-top:14px}.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.stats-grid article{padding:18px}.stats-grid span,.stats-grid strong{display:block}.stats-grid span{color:var(--text-muted);font-size:11px}.stats-grid strong{margin-top:8px;font-size:28px}.match-list{margin-top:14px;display:grid;gap:12px}.match-card{padding:20px}.match-card>header{display:grid;grid-template-columns:minmax(120px,.5fr) minmax(260px,1fr) minmax(180px,.6fr);gap:15px;align-items:center}.match-card>header h2{margin:0;font-size:18px;text-align:center}.match-code{padding:5px 8px;border-radius:8px;background:var(--accent-soft);font-size:11px;font-weight:700}.match-card>header small{margin-left:8px;color:var(--text-muted)}.match-meta{display:flex;justify-content:flex-end;gap:8px}.match-meta span{padding:6px 8px;border-radius:8px;background:var(--surface-soft);color:var(--text-secondary);font-size:10px}.play-grid{margin-top:18px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.play-grid>article{min-height:175px;padding:13px;border:1px solid var(--border);border-radius:13px;background:var(--surface-soft)}.play-grid h3{margin:0 0 10px;font-size:13px}.options{display:grid;gap:7px}.options>div{padding:9px;border-radius:9px;background:#fff}.options>div.peak{background:var(--accent-soft)}.options header{display:flex;justify-content:space-between;font-size:11px}.options>div>div{height:5px;margin:7px 0;border-radius:5px;overflow:hidden;background:#e8e8e3}.options i{display:block;height:100%;background:#7e9214}.options small{color:var(--text-muted);font-size:9px}@media(max-width:1050px){.play-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:650px){.stats-grid,.play-grid{grid-template-columns:1fr}.match-card>header{grid-template-columns:1fr}.match-card>header h2{text-align:left}.match-meta{justify-content:flex-start}}
 </style>

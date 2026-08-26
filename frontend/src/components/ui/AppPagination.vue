@@ -1,0 +1,2 @@
+<template><nav class="pagination" aria-label="分页"><button type="button" :disabled="page <= 1 || disabled" @click="$emit('change', page - 1)">←</button><span>第 {{ page }} / {{ pages }} 页</span><button type="button" :disabled="page >= pages || disabled" @click="$emit('change', page + 1)">→</button></nav></template>
+<script setup>defineProps({ page:{type:Number,default:1}, pages:{type:Number,default:1}, disabled:Boolean }); defineEmits(["change"])</script>

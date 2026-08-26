@@ -1,0 +1,2 @@
+<template><div class="state-box"><div class="state-content"><span class="state-icon">!</span><h3>{{ title }}</h3><p>{{ description }}</p><button class="primary-button" type="button" @click="$emit('retry')">重新加载</button></div></div></template>
+<script setup>defineProps({ title:{ type:String, default:"数据加载失败" }, description:{ type:String, default:"请稍后重试或检查接口连接状态" } }); defineEmits(["retry"])</script>
