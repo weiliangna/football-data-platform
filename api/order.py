@@ -1,12 +1,16 @@
 from fastapi import APIRouter
 from database.mysql import get_conn
+from common.platform_registry import default_platform_metadata
 import pymysql
 import json
 
 router = APIRouter(prefix="/api/order", tags=["order"])
 
 PASS_MAP = {"500":"单关","502":"2串1","503":"3串1","504":"4串1","505":"5串1","506":"6串1","507":"7串1","MIX":"混合过关"}
-PLATFORM_MAP = {1:"彩站云",2:"州运宝",3:"鸿瑞",4:"云彩"}
+PLATFORM_MAP = {
+    platform_id: item["name"]
+    for platform_id, item in default_platform_metadata().items()
+}
 
 
 def get_play_name(play_type, pass_summary=None):

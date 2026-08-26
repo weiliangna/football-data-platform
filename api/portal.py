@@ -14,6 +14,7 @@ from common.match_identity import (
     table_columns,
 )
 from common.match_utils import parse_match_name
+from common.platform_registry import default_platform_metadata
 from database.mysql import get_conn
 
 
@@ -24,10 +25,8 @@ router = APIRouter(
 
 
 PLATFORMS = {
-    1: "彩站云",
-    2: "州运宝",
-    3: "鸿瑞",
-    4: "云彩",
+    platform_id: item["name"]
+    for platform_id, item in default_platform_metadata().items()
 }
 
 FOUR_PLAYS = (
@@ -936,7 +935,7 @@ def dashboard():
         }
 
         platform_rows = []
-        for platform_id in (1, 3, 2, 4):
+        for platform_id in (1, 3, 2, 4, 5, 6):
             rows = [
                 order
                 for order in today_all
@@ -1364,7 +1363,7 @@ def aggregate_heatmap(ctx, play_type):
                             option,
                             0
                         )
-                        for pid in (1, 3, 2, 4)
+                        for pid in (1, 3, 2, 4, 5, 6)
                     },
                 }
             )
@@ -1418,7 +1417,7 @@ def aggregate_heatmap(ctx, play_type):
 
     platform_summary = []
 
-    for platform_id in (1, 3, 2, 4):
+    for platform_id in (1, 3, 2, 4, 5, 6):
         option_rows = [
             {
                 "option": option,

@@ -163,6 +163,8 @@
               鸿{{ option.platforms['3'] || 0 }}
               州{{ option.platforms['2'] || 0 }}
               云{{ option.platforms['4'] || 0 }}
+              店{{ option.platforms['5'] || 0 }}
+              启{{ option.platforms['6'] || 0 }}
             </small>
           </div>
 

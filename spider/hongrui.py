@@ -734,7 +734,8 @@ def build_odds_text(
 
 def preview_order(
     list_item,
-    raw_detail
+    raw_detail,
+    alias_map=None,
 ):
 
     parsed = parse_detail(
@@ -1669,6 +1670,27 @@ def save_order(
             )
 
 
+    cursor.execute(
+        """
+        INSERT INTO users
+        (platform_id,platform_user_id,username,nickname,total_orders)
+        VALUES(%s,%s,%s,%s,0)
+        ON DUPLICATE KEY UPDATE
+            username=VALUES(username),
+            nickname=CASE
+                WHEN VALUES(nickname)<>'' THEN VALUES(nickname)
+                ELSE nickname
+            END
+        """,
+        (
+            PLATFORM_ID,
+            user_id,
+            str(user_id),
+            nickname,
+        ),
+    )
+
+
     save_user_avatar(
         cursor,
         user_id,
@@ -1800,7 +1822,8 @@ def main():
 
                 preview_order(
                     list_item,
-                    detail
+                    detail,
+                    alias_map=alias_map,
                 )
 
 

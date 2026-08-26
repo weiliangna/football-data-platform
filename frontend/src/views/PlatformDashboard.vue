@@ -124,7 +124,7 @@ import axios from 'axios'
 import {downloadJson,stamp} from '../utils/export'
 
 const route=useRoute(); const router=useRouter(); const fileInput=ref(null); const data=ref({})
-const names={1:'彩站云',2:'州运宝',3:'鸿瑞',4:'云彩'}
+const names={1:'彩站云',2:'州运宝',3:'鸿瑞',4:'云彩',5:'好店主',6:'启示录'}
 const platformId=computed(()=>Number(route.params.platformId||0))
 const platformName=computed(()=>names[platformId.value]||'平台')
 const m=computed(()=>data.value.metrics||{})

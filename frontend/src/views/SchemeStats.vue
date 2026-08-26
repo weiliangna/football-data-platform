@@ -99,7 +99,7 @@ import axios from 'axios'
 import {downloadExcel,downloadTextPng,stamp} from '../utils/export'
 
 const route=useRoute();const router=useRouter();const mode=ref(route.query.mode==='overview'?'overview':'duplicates');const keyword=ref('');const rows=ref([]);const page=ref(1);const pages=ref(1);const total=ref(0);const pageSize=30;const analysisVisible=ref(false)
-const names={1:'彩站云',2:'州运宝',3:'鸿瑞',4:'云彩'};const platformId=computed(()=>Number(route.params.platformId));const platformName=computed(()=>names[platformId.value]||'平台')
+const names={1:'彩站云',2:'州运宝',3:'鸿瑞',4:'云彩',5:'好店主',6:'启示录'};const platformId=computed(()=>Number(route.params.platformId));const platformName=computed(()=>names[platformId.value]||'平台')
 const analysis=computed(()=>{const stake=rows.value.reduce((s,r)=>s+Number(r.stake||r.total_stake||0),0);const followers=rows.value.reduce((s,r)=>s+Number(r.follow_num||r.total_follow||0),0);const maxDuplicate=Math.max(0,...rows.value.map(r=>Number(r.duplicate_count||1)));return{avgStake:rows.value.length?stake/rows.value.length:0,followers,maxDuplicate}})
 async function load(){const r=await axios.get('/api/hub/schemes',{params:{platform_id:platformId.value,mode:mode.value,keyword:keyword.value,page:page.value,page_size:pageSize}});if(r.data?.code===200){rows.value=r.data.data||[];pages.value=r.data.pages||1;total.value=r.data.total||0}}
 function setMode(v){mode.value=v;page.value=1;router.replace({query:{...route.query,mode:v}});load()}

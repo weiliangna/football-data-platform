@@ -5,7 +5,7 @@
     <div>
       <p>USER CENTER</p>
       <h1>用户中心</h1>
-      <span>四平台用户统一排行，用户名前显示已抓取头像</span>
+      <span>六平台用户统一排行，用户名前显示已抓取头像</span>
     </div>
   </header>
 
@@ -18,6 +18,8 @@
       <option value="3">鸿瑞</option>
       <option value="2">州运宝</option>
       <option value="4">云彩</option>
+      <option value="5">好店主</option>
+      <option value="6">启示录</option>
     </select>
 
     <input

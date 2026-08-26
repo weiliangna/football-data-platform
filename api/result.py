@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from database.mysql import get_conn
+from common.platform_registry import default_platform_name
 import pymysql
 
 
@@ -22,18 +23,7 @@ PASS_MAP = {
 
 
 def platform_name(platform_id):
-
-    mapping = {
-        1: "彩站云",
-        2: "州运宝",
-        3: "鸿瑞",
-        4: "云彩"
-    }
-
-    return mapping.get(
-        int(platform_id or 0),
-        "未知平台"
-    )
+    return default_platform_name(platform_id)
 
 
 def play_name(

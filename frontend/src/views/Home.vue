@@ -21,7 +21,7 @@
     <article class="hero-card">
       <div class="hero-copy">
         <span>FOOTBALL DATA</span>
-        <h2>四平台实时方案聚合</h2>
+        <h2>六平台实时方案聚合</h2>
         <p>当日方案、资金、用户与赛果集中展示</p>
 
         <button

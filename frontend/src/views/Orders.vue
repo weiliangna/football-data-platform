@@ -20,6 +20,8 @@
       <option value="3">鸿瑞</option>
       <option value="2">州运宝</option>
       <option value="4">云彩</option>
+      <option value="5">好店主</option>
+      <option value="6">启示录</option>
     </select>
 
     <input

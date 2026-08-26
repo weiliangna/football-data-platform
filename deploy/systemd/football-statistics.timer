@@ -1,9 +1,9 @@
 [Unit]
-Description=Refresh Football Statistics Every 5 Minutes
+Description=Refresh Football Statistics Every 30 Seconds
 
 [Timer]
 OnBootSec=70s
-OnUnitActiveSec=300s
+OnUnitActiveSec=30s
 AccuracySec=10s
 Persistent=true
 Unit=football-statistics.service

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from database.mysql import get_conn
+from common.platform_registry import default_platform_metadata
 import pymysql
 
 
@@ -150,10 +151,8 @@ def ranking_list(
 
 
         platform_map = {
-            1: "彩站云",
-            2: "州运宝",
-            3: "鸿瑞",
-            4: "云彩"
+            platform_id: item["name"]
+            for platform_id, item in default_platform_metadata().items()
         }
 
 

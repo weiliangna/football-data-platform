@@ -1,5 +1,5 @@
 [Unit]
-Description=Football Data Platform Collection Pipeline
+Description=Football Unified Platform Collection Pipeline
 After=network-online.target
 Wants=network-online.target
 
@@ -9,4 +9,9 @@ User=admin
 WorkingDirectory=/www/wwwroot/football_system
 EnvironmentFile=/www/wwwroot/football_system/config/database.env
 EnvironmentFile=/www/wwwroot/football_system/config/caizhanyun.env
+EnvironmentFile=/www/wwwroot/football_system/config/hongrui.env
+EnvironmentFile=-/www/wwwroot/football_system/config/zhouyunbao.env
+EnvironmentFile=-/www/wwwroot/football_system/config/yuncai.env
+EnvironmentFile=-/www/wwwroot/football_system/config/haodianzhu.env
+EnvironmentFile=-/www/wwwroot/football_system/config/qishilu.env
 ExecStart=/www/wwwroot/football_system/venv/bin/python /www/wwwroot/football_system/spider/pipeline.py

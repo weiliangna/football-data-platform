@@ -32,8 +32,9 @@ CONFIG = {
         "/lottery-store/api/prescient-hall/order/info"
     ),
     "token": CAIZHANYUN_CONFIG["token"],
-    "userid": "260610",
-    "storeId": "ds711",
+    "cookie": CAIZHANYUN_CONFIG["cookie"],
+    "userid": CAIZHANYUN_CONFIG["request_user_id"],
+    "storeId": CAIZHANYUN_CONFIG["store_id"],
 }
 
 

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from database.mysql import get_conn
 from api.settlement import check_play
+from common.platform_registry import default_platform_metadata
 
 
 router = APIRouter(
@@ -18,12 +19,7 @@ router = APIRouter(
 )
 
 
-PLATFORMS = {
-    1: {"name": "彩站云", "short": "彩", "site": "https://hfive.cfgsdok.com/"},
-    2: {"name": "州运宝", "short": "州", "site": "https://hfive.cfkjmagic.cn/"},
-    3: {"name": "鸿瑞", "short": "鸿", "site": "http://playerhf.fxgzht.com.cn/h5_1"},
-    4: {"name": "云彩", "short": "云", "site": "https://ycahdtoquick03.sadsdh.com/"},
-}
+PLATFORMS = default_platform_metadata()
 
 MARKETS = ["胜平负", "让球胜平负", "半全场", "比分"]
 
