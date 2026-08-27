@@ -65,7 +65,9 @@ def merge_platform_configs(rows):
     next_id = max(used_ids or {0}) + 1
     merged = []
 
-    for preferred_id, metadata in default_platform_metadata().items():
+    for preferred_id, metadata in default_platform_metadata(
+        active_only=True
+    ).items():
         name = metadata["name"]
         configured = by_name.get(name)
 
@@ -95,13 +97,6 @@ def merge_platform_configs(rows):
         merged.append(item)
         emitted_ids.add(platform_id)
         used_ids.add(platform_id)
-
-    for row in existing:
-        if row["platform_id"] in emitted_ids:
-            continue
-        item = dict(row)
-        item["configured"] = True
-        merged.append(item)
 
     return sorted(
         merged,

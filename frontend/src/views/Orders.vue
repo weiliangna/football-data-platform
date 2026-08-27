@@ -44,7 +44,7 @@
               <tr v-if="isExpanded(order.id)" class="expanded-row">
                 <td colspan="10">
                   <div v-if="(order.matches || []).length" class="match-grid">
-                    <div v-for="match in order.matches" :key="match.id || match.match_code"><b>{{ match.match_code || "--" }} · {{ match.home || "--" }} VS {{ match.away || "--" }}</b><span>{{ match.play_type || "--" }} · {{ match.selection || "--" }}</span><small>{{ match.result || "待开奖" }} {{ scoreText(match) }}</small></div>
+                    <div v-for="match in order.matches" :key="match.id || match.match_code"><b>{{ match.match_code || "--" }} · {{ match.home || "--" }} VS {{ match.away || "--" }}</b><span>{{ match.play_type || "--" }} · {{ match.selection || "--" }} · SP {{ match.odds || "--" }}</span><small>{{ match.result || "待开奖" }} {{ scoreText(match) }}</small></div>
                   </div>
                   <EmptyState v-else title="比赛明细待同步" description="当前订单尚未生成拆分比赛数据" />
                 </td>

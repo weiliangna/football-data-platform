@@ -1,3 +1,4 @@
+import json
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -14,7 +15,11 @@ from common.match_identity import (
     table_columns,
 )
 from common.match_utils import parse_match_name
-from common.platform_registry import default_platform_metadata
+from common.pass_utils import normalize_pass_summary
+from common.platform_registry import (
+    ACTIVE_PLATFORM_IDS,
+    default_platform_metadata,
+)
 from database.mysql import get_conn
 
 
@@ -73,6 +78,69 @@ def split_options(value):
     ]
 
 
+def parse_option_detail(value):
+    if isinstance(value, list):
+        rows = value
+    else:
+        try:
+            rows = json.loads(str(value or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            rows = []
+    if isinstance(rows, dict):
+        rows = rows.get("options") or [rows]
+    return [item for item in rows if isinstance(item, dict)]
+
+
+def selection_odds(row):
+    details = parse_option_detail(row.get("option_detail"))
+    selected = {
+        normalize_text(item)
+        for item in split_options(row.get("selection"))
+    }
+    values = []
+    for item in details:
+        name = normalize_text(
+            item.get("name")
+            or item.get("selection")
+            or item.get("label")
+        )
+        odds = item.get("odds")
+        if odds in (None, ""):
+            odds = item.get("sp")
+        if odds in (None, ""):
+            odds = item.get("value")
+        if odds in (None, ""):
+            continue
+        if selected and name and name not in selected:
+            continue
+        text = str(odds).strip()
+        if text and text not in values:
+            values.append(text)
+    if not values and len(details) == 1:
+        odds = details[0].get("odds")
+        if odds not in (None, ""):
+            values.append(str(odds).strip())
+    return " / ".join(values)
+
+
+def option_odds(row, option):
+    target = normalize_text(option)
+    for item in parse_option_detail(row.get("option_detail")):
+        name = normalize_text(
+            item.get("name")
+            or item.get("selection")
+            or item.get("label")
+        )
+        if name != target:
+            continue
+        value = item.get("odds")
+        if value in (None, ""):
+            value = item.get("sp")
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
 def current_event_day(now):
     return (now - timedelta(hours=6)).date()
 
@@ -104,6 +172,70 @@ def load_aliases(cursor):
         return load_team_aliases(cursor)
     except Exception:
         return {}
+
+
+def load_hongrui_match_references(cursor, alias_map):
+    references = {}
+    team_candidates = defaultdict(dict)
+    try:
+        cursor.execute(
+            """
+            SELECT
+                om.match_code,
+                om.match_name,
+                om.league,
+                DATE(
+                    DATE_SUB(
+                        COALESCE(o.publish_time,o.created_time),
+                        INTERVAL 6 HOUR
+                    )
+                ) AS event_day
+            FROM order_matches om
+            INNER JOIN orders o ON o.id=om.order_id
+            WHERE o.platform_id=3
+              AND om.match_name IS NOT NULL
+              AND om.match_name<>''
+            ORDER BY om.id DESC
+            LIMIT 5000
+            """
+        )
+        for row in cursor.fetchall() or []:
+            match = canonical_match(
+                alias_map,
+                3,
+                row.get("match_name"),
+            )
+            key = (
+                match["normalized_home"],
+                match["normalized_away"],
+            )
+            if not all(key):
+                continue
+            reference = {
+                "match_code": row.get("match_code") or "",
+                "home": match["home"],
+                "away": match["away"],
+                "match_name": match["display"],
+                "league": row.get("league") or "",
+                "canonical_display_key": "|".join(key),
+            }
+            event_day = str(row.get("event_day") or "")
+            if event_day:
+                references.setdefault(
+                    ("date", event_day, *key),
+                    reference,
+                )
+            code = str(row.get("match_code") or "").strip()
+            if code:
+                team_candidates[key].setdefault(code, reference)
+        for key, candidates in team_candidates.items():
+            if len(candidates) == 1:
+                references[("teams", *key)] = next(
+                    iter(candidates.values())
+                )
+    except Exception:
+        return {}
+    return references
 
 def load_profiles(cursor):
     result = {}
@@ -408,6 +540,7 @@ def load_orders_for_day(cursor, target_day, pending_only=False):
     where = [
         "COALESCE(o.publish_time,o.created_time)>=%s",
         "COALESCE(o.publish_time,o.created_time)<%s",
+        "o.platform_id IN (1,2,3,4)",
     ]
     params = [day_start, day_end]
 
@@ -540,6 +673,12 @@ def load_order_matches(cursor, order_ids):
         SELECT
             om.id,
             om.order_id,
+            DATE(
+                DATE_SUB(
+                    COALESCE(o.publish_time,o.created_time),
+                    INTERVAL 6 HOUR
+                )
+            ) AS order_event_day,
             {identity_fields}
             om.match_code,
             om.match_name,
@@ -699,6 +838,13 @@ def is_order_unexpired(
 
 
 def portal_match_group_key(row, platform_id=None):
+    canonical_display_key = str(
+        row.get("canonical_display_key")
+        or ""
+    ).strip()
+    if canonical_display_key:
+        return f"display:{canonical_display_key}"
+
     identity = str(
         row.get("match_identity")
         or ""
@@ -735,11 +881,46 @@ def portal_match_group_key(row, platform_id=None):
     )
 
 
-def format_match_row(row, alias_map, platform_id):
+def format_match_row(
+    row,
+    alias_map,
+    platform_id,
+    hongrui_references=None,
+):
     match = canonical_match(
         alias_map,
         platform_id,
         row.get("match_name"),
+        row.get("home_team"),
+        row.get("away_team"),
+    )
+
+    normalized_pair = (
+        match["normalized_home"],
+        match["normalized_away"],
+    )
+    reference_day = (
+        row.get("match_date")
+        or row.get("order_event_day")
+    )
+    if not reference_day and row.get("finished_time"):
+        parsed_finished = parse_datetime(row.get("finished_time"))
+        reference_day = parsed_finished.date() if parsed_finished else None
+    references = hongrui_references or {}
+    reference = references.get(
+        ("date", str(reference_day), *normalized_pair),
+        {},
+    )
+    if not reference:
+        reference = references.get(
+            ("teams", *normalized_pair),
+            references.get(normalized_pair, {}),
+        )
+    home = reference.get("home") or match["home"]
+    away = reference.get("away") or match["away"]
+    match_name = (
+        reference.get("match_name")
+        or match["display"]
     )
 
     return {
@@ -748,7 +929,11 @@ def format_match_row(row, alias_map, platform_id):
             row.get("platform_id")
             or platform_id
         ),
-        "match_code": row.get("match_code") or "",
+        "match_code": (
+            reference.get("match_code")
+            or row.get("match_code")
+            or ""
+        ),
         "match_date": row.get("match_date"),
         "match_key": (
             row.get("match_key")
@@ -767,13 +952,22 @@ def format_match_row(row, alias_map, platform_id):
             row.get("normalized_away")
             or match["normalized_away"]
         ),
-        "home": match["home"],
-        "away": match["away"],
-        "match_name": match["display"],
-        "league": row.get("league") or "",
+        "home": home,
+        "away": away,
+        "match_name": match_name,
+        "canonical_display_key": (
+            reference.get("canonical_display_key")
+            or match["match_key"]
+        ),
+        "league": (
+            reference.get("league")
+            or row.get("league")
+            or ""
+        ),
         "play_type": row.get("play_type") or "",
         "selection": row.get("selection") or "",
         "options": split_options(row.get("selection")),
+        "odds": selection_odds(row),
         "handicap": intv(row.get("handicap")),
         "result": row.get("bet_result") or "待开奖",
         "home_score": row.get("home_score"),
@@ -799,6 +993,7 @@ def enrich_order(
     alias_map,
     profiles,
     statistics=None,
+    hongrui_references=None,
 ):
     platform_id = intv(order.get("platform_id"))
     user_id = intv(order.get("user_id"))
@@ -818,7 +1013,8 @@ def enrich_order(
         format_match_row(
             row,
             alias_map,
-            platform_id
+            platform_id,
+            hongrui_references,
         )
         for row in matches
     ]
@@ -858,13 +1054,20 @@ def enrich_order(
             or order.get("created_time")
         ),
         "pass_summary": (
-            order.get("pass_summary")
+            normalize_pass_summary(order.get("pass_summary"))
             or order.get("play_type")
             or ""
         ),
         "pass_composition": order.get("pass_composition") or "",
         "bet_count": intv(order.get("bet_count")),
-        "odds_text": order.get("odds_text") or "",
+        "odds_text": (
+            order.get("odds_text")
+            or " / ".join(
+                match["odds"]
+                for match in formatted_matches
+                if match.get("odds")
+            )
+        ),
         "stake": money(order.get("stake")),
         "follow_num": intv(order.get("follow_num")),
         "result": order.get("result") or "待开奖",
@@ -884,6 +1087,10 @@ def build_current_context(cursor):
     target_day = current_event_day(now)
 
     alias_map = load_aliases(cursor)
+    hongrui_references = load_hongrui_match_references(
+        cursor,
+        alias_map,
+    )
     profiles = load_profiles(cursor)
     schedule_by_code, schedule_by_name = load_match_schedule(cursor)
 
@@ -927,6 +1134,7 @@ def build_current_context(cursor):
         "now": now,
         "day": target_day,
         "alias_map": alias_map,
+        "hongrui_references": hongrui_references,
         "profiles": profiles,
         "unexpired": unexpired,
         "deadline_summary": deadline_summary,
@@ -946,6 +1154,7 @@ def dashboard():
         target_day = ctx["day"]
         now = ctx["now"]
         alias_map = ctx["alias_map"]
+        hongrui_references = ctx["hongrui_references"]
         profiles = ctx["profiles"]
         unexpired = ctx["unexpired"]
 
@@ -961,6 +1170,11 @@ def dashboard():
             target_day,
             pending_only=False
         )
+        yesterday_settled = [
+            order
+            for order in yesterday_orders
+            if str(order.get("result") or "") != "待开奖"
+        ]
 
         metrics = {
             "yesterday_plans": len(yesterday_orders),
@@ -969,6 +1183,12 @@ def dashboard():
                 for order in yesterday_orders
                 if str(order.get("result") or "") == "赢"
             ),
+            "yesterday_lost": sum(
+                1
+                for order in yesterday_settled
+                if str(order.get("result") or "") == "输"
+            ),
+            "yesterday_settled": len(yesterday_settled),
             "today_plans": len(today_all),
             "today_followers": sum(
                 intv(order.get("follow_num"))
@@ -985,7 +1205,7 @@ def dashboard():
         }
 
         platform_rows = []
-        for platform_id in (1, 3, 2, 4, 5, 6):
+        for platform_id in (1, 3, 2, 4):
             rows = [
                 order
                 for order in today_all
@@ -1047,7 +1267,8 @@ def dashboard():
                     order,
                     matches,
                     alias_map,
-                    profiles
+                    profiles,
+                    hongrui_references=hongrui_references,
                 )
             )
 
@@ -1138,7 +1359,7 @@ def schemes(
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        where = ["1=1"]
+        where = ["o.platform_id IN (1,2,3,4)"]
         params = []
 
         if platform_id > 0:
@@ -1193,6 +1414,10 @@ def schemes(
             [intv(order.get("id")) for order in orders]
         )
         alias_map = load_aliases(cursor)
+        hongrui_references = load_hongrui_match_references(
+            cursor,
+            alias_map,
+        )
         profiles = load_profiles(cursor)
         statistics = load_user_statistics(cursor)
 
@@ -1203,6 +1428,7 @@ def schemes(
                 alias_map,
                 profiles,
                 statistics,
+                hongrui_references,
             )
             for order in orders
         ]
@@ -1245,6 +1471,10 @@ def user_detail(platform_id: int, user_id: int):
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         alias_map = load_aliases(cursor)
+        hongrui_references = load_hongrui_match_references(
+            cursor,
+            alias_map,
+        )
         profiles = load_profiles(cursor)
         profile = profiles.get((platform_id, user_id), {})
 
@@ -1282,6 +1512,7 @@ def user_detail(platform_id: int, user_id: int):
                 grouped.get(intv(order.get("id")), []),
                 alias_map,
                 profiles,
+                hongrui_references=hongrui_references,
             )
             for order in orders
         ]
@@ -1338,6 +1569,7 @@ def user_detail(platform_id: int, user_id: int):
 
 def aggregate_heatmap(ctx, play_type):
     alias_map = ctx["alias_map"]
+    hongrui_references = ctx["hongrui_references"]
     match_groups = {}
     platform_total = defaultdict(int)
 
@@ -1351,7 +1583,8 @@ def aggregate_heatmap(ctx, play_type):
             formatted = format_match_row(
                 row,
                 alias_map,
-                platform_id
+                platform_id,
+                hongrui_references,
             )
 
             key = portal_match_group_key(
@@ -1372,6 +1605,7 @@ def aggregate_heatmap(ctx, play_type):
                     "match_name": formatted["match_name"],
                     "league": formatted["league"],
                     "option_counts": defaultdict(int),
+                    "option_odds": {},
                     "platform_counts": defaultdict(
                         lambda: defaultdict(int)
                     ),
@@ -1383,6 +1617,9 @@ def aggregate_heatmap(ctx, play_type):
                 formatted["selection"]
             ):
                 group["option_counts"][option] += 1
+                odds = option_odds(row, option)
+                if odds and option not in group["option_odds"]:
+                    group["option_odds"][option] = odds
                 group["platform_counts"][platform_id][option] += 1
                 platform_total[(platform_id, option)] += 1
 
@@ -1404,6 +1641,7 @@ def aggregate_heatmap(ctx, play_type):
                 {
                     "option": option,
                     "count": count,
+                    "odds": group["option_odds"].get(option) or "",
                     "share": round(
                         count / total_items * 100,
                         2
@@ -1415,7 +1653,7 @@ def aggregate_heatmap(ctx, play_type):
                             option,
                             0
                         )
-                        for pid in (1, 3, 2, 4, 5, 6)
+                        for pid in (1, 3, 2, 4)
                     },
                 }
             )
@@ -1469,7 +1707,7 @@ def aggregate_heatmap(ctx, play_type):
 
     platform_summary = []
 
-    for platform_id in (1, 3, 2, 4, 5, 6):
+    for platform_id in (1, 3, 2, 4):
         option_rows = [
             {
                 "option": option,
@@ -1654,7 +1892,7 @@ def users(
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        where = ["1=1"]
+        where = ["us.platform_id IN (1,2,3,4)"]
         params = []
 
         if platform_id > 0:
@@ -1774,6 +2012,10 @@ def results(
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
         alias_map = load_aliases(cursor)
+        hongrui_references = load_hongrui_match_references(
+            cursor,
+            alias_map,
+        )
         result_columns = table_columns(
             cursor,
             "match_results",
@@ -1804,11 +2046,18 @@ def results(
             """
         )
 
+        active_results_where = (
+            "status='已结束' AND "
+            "(platform_id IS NULL OR platform_id IN (1,2,3,4))"
+            if result_identity_v2
+            else "status='已结束'"
+        )
+
         cursor.execute(
-            """
+            f"""
             SELECT COUNT(*) AS c
             FROM match_results
-            WHERE status='已结束'
+            WHERE {active_results_where}
             """
         )
         total = intv(cursor.fetchone()["c"])
@@ -1831,7 +2080,7 @@ def results(
                 status,
                 finished_time
             FROM match_results
-            WHERE status='已结束'
+            WHERE {active_results_where}
             ORDER BY
                 COALESCE(finished_time,created_time) DESC,
                 id DESC
@@ -1843,27 +2092,19 @@ def results(
         rows = []
 
         for row in cursor.fetchall():
-            split_home, split_away = split_match_name(
-                row.get("match_name")
-            )
-
             platform_id = intv(row.get("platform_id"))
-            home = canonical_team(
+            formatted = format_match_row(
+                row,
                 alias_map,
                 platform_id,
-                row.get("home_team") or split_home
-            )
-            away = canonical_team(
-                alias_map,
-                platform_id,
-                row.get("away_team") or split_away
+                hongrui_references,
             )
 
             rows.append(
                 {
                     "id": intv(row.get("id")),
                     "platform_id": platform_id,
-                    "match_code": row.get("match_code") or "",
+                    "match_code": formatted["match_code"],
                     "match_date": row.get("match_date"),
                     "match_key": row.get("match_key") or "",
                     "match_identity": (
@@ -1874,13 +2115,9 @@ def results(
                         row.get("identity_quality")
                         or "legacy"
                     ),
-                    "home": home,
-                    "away": away,
-                    "match_name": (
-                        f"{home} VS {away}"
-                        if home and away
-                        else row.get("match_name")
-                    ),
+                    "home": formatted["home"],
+                    "away": formatted["away"],
+                    "match_name": formatted["match_name"],
                     "home_score": row.get("home_score"),
                     "away_score": row.get("away_score"),
                     "half_home_score": row.get("half_home_score"),
@@ -1950,13 +2187,18 @@ def order_detail(order_id: int):
         )
 
         alias_map = load_aliases(cursor)
+        hongrui_references = load_hongrui_match_references(
+            cursor,
+            alias_map,
+        )
         profiles = load_profiles(cursor)
 
         data = enrich_order(
             order,
             grouped.get(order_id, []),
             alias_map,
-            profiles
+            profiles,
+            hongrui_references=hongrui_references,
         )
 
         return {

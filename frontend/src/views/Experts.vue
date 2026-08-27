@@ -96,8 +96,6 @@ const FALLBACK_PLATFORMS = [
   { platform_id: 2, name: "州运宝" },
   { platform_id: 3, name: "鸿瑞" },
   { platform_id: 4, name: "云彩" },
-  { platform_id: 5, name: "好店主" },
-  { platform_id: 6, name: "启示录" },
 ]
 
 

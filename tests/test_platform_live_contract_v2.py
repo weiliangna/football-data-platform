@@ -359,8 +359,13 @@ class QishiluMarketTests(unittest.TestCase):
 
 
 class UnifiedPipelineTests(unittest.TestCase):
-    def test_six_platforms_run_concurrently_and_record_independently(self):
-        barrier = threading.Barrier(len(PLATFORM_DEFINITIONS))
+    def test_active_platforms_run_and_stopped_platforms_are_disabled(self):
+        active = [
+            item
+            for item in PLATFORM_DEFINITIONS
+            if item.key not in {"haodianzhu", "qishilu"}
+        ]
+        barrier = threading.Barrier(len(active))
         runners = {}
 
         for definition in PLATFORM_DEFINITIONS:
@@ -368,8 +373,6 @@ class UnifiedPipelineTests(unittest.TestCase):
                 barrier.wait(timeout=2)
                 if key == "yuncai":
                     raise SourceContractUnavailable("offline contract")
-                if key == "qishilu":
-                    raise RuntimeError("offline platform failure")
                 return {
                     "new_count": 1,
                     "duplicate_count": 0,
@@ -402,8 +405,8 @@ class UnifiedPipelineTests(unittest.TestCase):
             for item in statuses
         }
         self.assertEqual(by_name["云彩"], "waiting_contract")
-        self.assertEqual(by_name["启示录"], "failed")
-        self.assertEqual(by_name["好店主"], "success")
+        self.assertEqual(by_name["启示录"], "disabled")
+        self.assertEqual(by_name["好店主"], "disabled")
         self.assertEqual(by_name["州运宝"], "success")
 
 

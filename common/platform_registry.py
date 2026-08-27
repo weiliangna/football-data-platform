@@ -68,6 +68,26 @@ PLATFORM_BY_DEFAULT_ID = {
 }
 
 
+STOPPED_PLATFORM_KEYS = frozenset({"haodianzhu", "qishilu"})
+STOPPED_PLATFORM_IDS = frozenset(
+    item.preferred_id
+    for item in PLATFORM_DEFINITIONS
+    if item.key in STOPPED_PLATFORM_KEYS
+)
+ACTIVE_PLATFORM_IDS = tuple(
+    item.preferred_id
+    for item in PLATFORM_DEFINITIONS
+    if item.key not in STOPPED_PLATFORM_KEYS
+)
+
+
+def is_platform_active(platform_id):
+    try:
+        return int(platform_id) not in STOPPED_PLATFORM_IDS
+    except (TypeError, ValueError):
+        return False
+
+
 def default_platform_id(key):
     return PLATFORM_BY_KEY[str(key)].preferred_id
 
@@ -79,7 +99,7 @@ def default_platform_name(platform_id):
     return f"平台{platform_id}"
 
 
-def default_platform_metadata():
+def default_platform_metadata(active_only=False):
     return {
         item.preferred_id: {
             "key": item.key,
@@ -88,6 +108,7 @@ def default_platform_metadata():
             "site": item.site,
         }
         for item in PLATFORM_DEFINITIONS
+        if not active_only or item.key not in STOPPED_PLATFORM_KEYS
     }
 
 
@@ -140,7 +161,15 @@ def ensure_platform_configs(connection_factory=None):
             existing = by_name.get(definition.name)
 
             if existing:
-                resolved[definition.key] = dict(existing)
+                item = dict(existing)
+                if definition.key in STOPPED_PLATFORM_KEYS:
+                    item.update(
+                        enabled=0,
+                        spider_enabled=0,
+                        result_enabled=0,
+                        settlement_enabled=0,
+                    )
+                resolved[definition.key] = item
                 continue
 
             if definition.preferred_id not in used_ids:
@@ -151,8 +180,10 @@ def ensure_platform_configs(connection_factory=None):
                 platform_id = next_id
                 next_id += 1
 
+            enabled = 0 if definition.key in STOPPED_PLATFORM_KEYS else 1
+            flag_sql = "0" if enabled == 0 else "1"
             cursor.execute(
-                """
+                f"""
                 INSERT INTO platform_config
                 (
                     platform_id,
@@ -162,17 +193,17 @@ def ensure_platform_configs(connection_factory=None):
                     result_enabled,
                     settlement_enabled
                 )
-                VALUES (%s,%s,1,1,1,1)
+                VALUES (%s,%s,{flag_sql},{flag_sql},{flag_sql},{flag_sql})
                 """,
                 (platform_id, definition.name),
             )
             created = {
                 "platform_id": platform_id,
                 "name": definition.name,
-                "enabled": 1,
-                "spider_enabled": 1,
-                "result_enabled": 1,
-                "settlement_enabled": 1,
+                "enabled": enabled,
+                "spider_enabled": enabled,
+                "result_enabled": enabled,
+                "settlement_enabled": enabled,
             }
             resolved[definition.key] = created
             by_name[definition.name] = created

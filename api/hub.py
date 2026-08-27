@@ -10,6 +10,13 @@ from pydantic import BaseModel
 
 from database.mysql import get_conn
 from api.settlement import check_play
+from api.portal import (
+    format_match_row,
+    load_aliases,
+    load_hongrui_match_references,
+    load_order_matches,
+)
+from common.pass_utils import normalize_pass_summary
 from common.platform_registry import default_platform_metadata
 
 
@@ -1149,17 +1156,22 @@ def ranking(period:str="day", platform_id:int=0):
 
 
 @router.get("/results")
-def hub_results(platform_id:int=0, month:str="", keyword:str="", status:str="", page:int=1, page_size:int=100):
+def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", status:str="", page:int=1, page_size:int=100):
     conn=get_conn(); cursor=conn.cursor(pymysql.cursors.DictCursor)
     try:
         page=max(1,page); page_size=max(20,min(200,page_size))
         if not month:
             cursor.execute("SELECT DATE_FORMAT(CURDATE(),'%Y-%m') AS m")
             month=cursor.fetchone()["m"]
-        where=["DATE_FORMAT(COALESCE(o.publish_time,o.created_time),'%Y-%m')=%s"]
+        where=[
+            f"DATE_FORMAT({event_day_sql('o')},'%Y-%m')=%s",
+            "o.platform_id IN (1,2,3,4)",
+        ]
         params=[month]
         if platform_id>0:
             where.append("o.platform_id=%s"); params.append(platform_id)
+        if day:
+            where.append(f"{event_day_sql('o')}=%s"); params.append(day)
         keyword=str(keyword or "").strip()
         if keyword:
             like=f"%{keyword}%"; where.append("(o.nickname LIKE %s OR o.platform_order_id LIKE %s OR o.match_name LIKE %s OR o.selection LIKE %s)"); params.extend([like,like,like,like])
@@ -1169,19 +1181,115 @@ def hub_results(platform_id:int=0, month:str="", keyword:str="", status:str="", 
         ws=" AND ".join(where)
         cursor.execute(f"SELECT COUNT(*) AS c FROM orders o WHERE {ws}",tuple(params)); total=intv(cursor.fetchone()["c"])
         cursor.execute(f"""
-            SELECT o.id,o.platform_id,o.platform_order_id,o.user_id,o.nickname,o.match_name,o.pass_summary,o.selection,o.odds_text,o.stake,o.follow_num,o.result,o.profit,o.platform_bonus,COALESCE(o.publish_time,o.created_time) AS order_time
-            FROM orders o WHERE {ws} ORDER BY order_time DESC,o.id DESC LIMIT %s OFFSET %s
+            SELECT o.id,o.platform_id,o.platform_order_id,o.user_id,o.nickname,o.match_name,o.pass_summary,o.pass_composition,o.bet_count,o.selection,o.odds_text,o.stake,o.follow_num,o.result,o.profit,o.platform_bonus,COALESCE(o.publish_time,o.created_time) AS order_time,
+                   us.win_orders,us.lose_orders,us.hit_rate,up.avatar_url
+            FROM orders o
+            LEFT JOIN user_statistics us
+              ON us.platform_id=o.platform_id AND us.user_id=o.user_id
+            LEFT JOIN user_profiles_ext up
+              ON up.platform_id=o.platform_id AND up.user_id=o.user_id
+            WHERE {ws} ORDER BY order_time DESC,o.id DESC LIMIT %s OFFSET %s
         """,tuple(params+[page_size,(page-1)*page_size]))
         rows=cursor.fetchall()
+        alias_map=load_aliases(cursor)
+        hongrui_references=load_hongrui_match_references(cursor,alias_map)
+        grouped=load_order_matches(cursor,[intv(row.get("id")) for row in rows])
         for r in rows:
             r["platform_name"]=platform_name(r["platform_id"]); r["stake"]=money(r["stake"]); r["profit"]=money(r["profit"]); r["platform_bonus"]=money(r["platform_bonus"]); r["follow_num"]=intv(r["follow_num"])
-            cursor.execute("SELECT om.match_code,om.match_name,om.play_type,om.selection,om.result,mr.home_score,mr.away_score,mr.half_home_score,mr.half_away_score FROM order_matches om LEFT JOIN match_results mr ON mr.match_name=om.match_name WHERE om.order_id=%s ORDER BY om.id",(r["id"],))
-            r["matches"]=cursor.fetchall()
-        cursor.execute("SELECT DISTINCT DATE_FORMAT(COALESCE(publish_time,created_time),'%Y-%m') AS m FROM orders WHERE (%s=0 OR platform_id=%s) ORDER BY m DESC LIMIT 24",(platform_id,platform_id))
+            r["pass_summary"]=normalize_pass_summary(r.get("pass_summary")) or r.get("pass_composition") or ""
+            r["matches"]=[format_match_row(item,alias_map,r["platform_id"],hongrui_references) for item in grouped.get(intv(r.get("id")),[])]
+            if not r.get("odds_text"):
+                r["odds_text"]=" / ".join(item["odds"] for item in r["matches"] if item.get("odds"))
+            wins=intv(r.get("win_orders")); losses=intv(r.get("lose_orders"))
+            r["history_record"]=f"{wins}胜{losses}负" if wins+losses else "--"
+        cursor.execute("SELECT DISTINCT DATE_FORMAT("+event_day_sql('o')+",'%Y-%m') AS m FROM orders o WHERE o.platform_id IN (1,2,3,4) AND (%s=0 OR o.platform_id=%s) ORDER BY m DESC LIMIT 24",(platform_id,platform_id))
         months=[x["m"] for x in cursor.fetchall() if x.get("m")]
-        return {"code":200,"data":{"month":month,"months":months,"rows":rows,"total":total,"page":page,"pages":math.ceil(total/page_size) if total else 1}}
+        summary_where=[f"DATE_FORMAT({event_day_sql('o')},'%Y-%m')=%s","o.platform_id IN (1,2,3,4)"]
+        summary_params=[month]
+        if platform_id>0:
+            summary_where.append("o.platform_id=%s"); summary_params.append(platform_id)
+        summary_sql=" AND ".join(summary_where)
+        cursor.execute(f"""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN result='赢' THEN 1 ELSE 0 END) AS won,
+                   SUM(CASE WHEN result='输' THEN 1 ELSE 0 END) AS lost,
+                   SUM(CASE WHEN result='待开奖' THEN 1 ELSE 0 END) AS pending,
+                   IFNULL(SUM(stake),0) AS total_stake,
+                   IFNULL(SUM(follow_num),0) AS followers,
+                   IFNULL(SUM(platform_bonus),0) AS total_bonus
+            FROM orders o WHERE {summary_sql}
+        """,tuple(summary_params))
+        summary=cursor.fetchone() or {}
+        summary={"total":intv(summary.get("total")),"won":intv(summary.get("won")),"lost":intv(summary.get("lost")),"pending":intv(summary.get("pending")),"total_stake":money(summary.get("total_stake")),"followers":intv(summary.get("followers")),"total_bonus":money(summary.get("total_bonus"))}
+        cursor.execute(f"""
+            SELECT {event_day_sql('o')} AS day,COUNT(*) AS count
+            FROM orders o WHERE {summary_sql}
+            GROUP BY {event_day_sql('o')} ORDER BY day
+        """,tuple(summary_params))
+        date_counts=[{"day":str(item.get("day")),"count":intv(item.get("count"))} for item in cursor.fetchall() if item.get("day")]
+        return {"code":200,"data":{"month":month,"months":months,"rows":rows,"total":total,"page":page,"pages":math.ceil(total/page_size) if total else 1,"summary":summary,"date_counts":date_counts}}
     finally:
         cursor.close(); conn.close()
+
+
+@router.delete("/results")
+def clear_result_archive(
+    month: str,
+    confirm: str,
+    x_admin_token: str = Header(default=""),
+):
+    require_admin_token(x_admin_token)
+    month = str(month or "").strip()
+    expected = f"DELETE_RESULTS_{month}"
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="月份格式必须为 YYYY-MM")
+    if confirm != expected:
+        raise HTTPException(status_code=400, detail="删除确认文本不正确")
+
+    conn = get_conn()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            f"""
+            SELECT id FROM orders o
+            WHERE o.platform_id IN (1,2,3,4)
+              AND DATE_FORMAT({event_day_sql('o')},'%Y-%m')=%s
+            """,
+            (month,),
+        )
+        order_ids = [intv(row.get("id")) for row in cursor.fetchall()]
+        deleted_matches = 0
+        if order_ids:
+            marks = ",".join(["%s"] * len(order_ids))
+            cursor.execute(
+                f"DELETE FROM settlement_logs WHERE order_id IN ({marks})",
+                tuple(order_ids),
+            )
+            cursor.execute(
+                f"DELETE FROM order_matches WHERE order_id IN ({marks})",
+                tuple(order_ids),
+            )
+            deleted_matches = cursor.rowcount
+            cursor.execute(
+                f"DELETE FROM orders WHERE id IN ({marks})",
+                tuple(order_ids),
+            )
+            deleted_orders = cursor.rowcount
+        else:
+            deleted_orders = 0
+        conn.commit()
+        return {
+            "code": 200,
+            "month": month,
+            "deleted_orders": deleted_orders,
+            "deleted_matches": deleted_matches,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @router.get("/platform/{platform_id}/export")

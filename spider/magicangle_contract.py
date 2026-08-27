@@ -1,6 +1,7 @@
 import json
 
 from common.match_utils import parse_match_name
+from common.pass_utils import decode_pass_code
 from common.platform_field_mapping import (
     database_datetime,
     parse_epoch_milliseconds_beijing,
@@ -131,19 +132,6 @@ def decode_market(play_type, code):
     if play_type == "半全场":
         return decode_half_full(code)
     return decode_three_way(code, THREE_WAY)
-
-
-def decode_pass_code(value):
-    text = str(value or "").strip()
-
-    if len(text) == 3 and text.startswith("5") and text.isdigit():
-        count = int(text) - 500
-        if count == 1:
-            return "单关"
-        if count > 1:
-            return f"{count}串1"
-
-    return text
 
 
 def build_match_maps(matches):

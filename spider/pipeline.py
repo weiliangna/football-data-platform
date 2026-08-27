@@ -15,6 +15,7 @@ if BASE_DIR not in sys.path:
 
 from common.platform_registry import (
     PLATFORM_DEFINITIONS,
+    STOPPED_PLATFORM_KEYS,
     ensure_platform_configs,
 )
 from config.platform_ingestion_config import (
@@ -241,7 +242,10 @@ def _run_one(definition, runtime, runner):
         "cost_time": 0,
     }
 
-    if _disabled_status(runtime):
+    if (
+        definition.key in STOPPED_PLATFORM_KEYS
+        or _disabled_status(runtime)
+    ):
         base["status"] = "disabled"
         return base
 
