@@ -1288,7 +1288,7 @@ def build_current_context(cursor):
         target_day,
         pending_only=True,
     )
-    grouped = load_order_matches(
+    grouped = load_hot_play_matches(
         cursor,
         [intv(order.get("id")) for order in orders],
     )

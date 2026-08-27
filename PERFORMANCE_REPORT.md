@@ -54,7 +54,7 @@ FastAPI Portal / Hub / Match APIs
 - 文件：`api/portal.py`
 - 证据：`build_current_context()` 调用 `load_pending_orders()`，随后原来调用完整 `load_order_matches()`。完整查询为每条订单腿执行带多个 `OR` 的 `match_results` 关联子查询。
 - 放大因素：首页每 30 秒刷新；多个用户同时打开后，相同重查询并发执行。
-- 本轮处理：热门玩法改用 `load_hot_play_matches()`，不再关联赛果表，并按 1000 个订单分块。
+- 本轮处理：Dashboard、分析与热力使用的待开奖订单腿统一改用 `load_hot_play_matches()`，不再关联赛果表，并按 1000 个订单分块。
 
 ### P0：Dashboard 与所有同步 API 共享 FastAPI 默认线程池
 

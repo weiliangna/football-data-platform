@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import time
 import unittest
 from unittest.mock import patch
@@ -33,6 +34,11 @@ class RecordingCursor:
 
 
 class HotPlayQueryTests(unittest.TestCase):
+    def test_current_context_never_runs_settlement_join_for_pending_orders(self):
+        source = inspect.getsource(portal.build_current_context)
+        self.assertNotIn("load_order_matches(", source)
+        self.assertEqual(source.count("load_hot_play_matches("), 2)
+
     def test_hot_play_loader_does_not_join_settlement_results(self):
         cursor = RecordingCursor()
         with patch.object(portal, "table_columns", return_value={
