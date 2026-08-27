@@ -7,32 +7,49 @@ DEPLOY_SCRIPT = PROJECT_ROOT / "scripts" / "deploy_prod.sh"
 
 
 class DeploymentCompileScopeTests(unittest.TestCase):
-    def test_compile_checks_only_git_tracked_python_files(self):
-        script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    def setUp(self):
+        self.script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
-        self.assertIn("admin_git ls-files -z -- '*.py'", script)
-        self.assertIn('"$PROJECT_DIR/venv/bin/python" -m py_compile', script)
-        self.assertNotIn('"$PROJECT_DIR/venv/bin/python" -m compileall', script)
+    def test_compile_checks_only_git_tracked_python_files(self):
+        self.assertIn("admin_git ls-files -z -- '*.py'", self.script)
+        self.assertIn(
+            '"$PROJECT_DIR/venv/bin/python" -m py_compile',
+            self.script,
+        )
+        self.assertNotIn(
+            '"$PROJECT_DIR/venv/bin/python" -m compileall',
+            self.script,
+        )
 
     def test_compile_does_not_remove_local_production_files(self):
-        script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("git clean", self.script)
+        self.assertNotIn("rm -rf", self.script)
+        self.assertNotIn("git reset --hard", self.script)
 
-        self.assertNotIn("git clean", script)
-        self.assertNotIn("rm -rf", script)
-
-    def test_api_health_checks_wait_for_service_readiness(self):
-        script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
-
-        self.assertIn("wait_for_http()", script)
+    def test_api_health_checks_are_visible_and_bounded(self):
+        self.assertIn("wait_for_http()", self.script)
+        self.assertIn("Health check $attempt/$attempts", self.script)
+        self.assertIn("--connect-timeout 3 --max-time 20", self.script)
         self.assertIn(
-            'wait_for_http "http://127.0.0.1:8000/" 30',
-            script,
+            'wait_for_http "http://127.0.0.1:8000/" 3',
+            self.script,
         )
         self.assertIn(
-            '"http://127.0.0.1:8000/api/portal/dashboard" 30',
-            script,
+            '"http://127.0.0.1:8000/api/portal/dashboard" 3',
+            self.script,
         )
-        self.assertIn("sleep 1", script)
+        self.assertIn("sleep 2", self.script)
+
+    def test_interrupted_frontend_build_is_repaired(self):
+        self.assertIn("FRONTEND_BUILD_MARKER=", self.script)
+        self.assertIn("frontend_build_is_current", self.script)
+        self.assertIn("mark_frontend_build", self.script)
+        self.assertIn("rebuild scheduled", self.script)
+        self.assertIn('"${1:-}" == "--repair"', self.script)
+
+    def test_frontend_build_uses_locked_dependencies(self):
+        self.assertIn("npm ci --no-audit --no-fund", self.script)
+        self.assertIn("npm run build", self.script)
 
 
 if __name__ == "__main__":
