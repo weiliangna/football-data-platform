@@ -66,7 +66,8 @@ const optionNames = computed(() => [...new Set(displayedMatches.value.flatMap((i
 async function load() {
   if (requestInFlight) return
   requestInFlight = true
-  loading.value = true
+  const initialLoad = !Object.keys(data.value).length
+  if (initialLoad) loading.value = true
   error.value = ""
   try {
     const response = await axios.get("/api/portal/heatmap", { params: { play_type: playType.value }, timeout: 25000 })
@@ -74,8 +75,10 @@ async function load() {
     data.value = response.data.data || {}
     if (selectedMatch.value && !matches.value.some((item) => matchKey(item) === selectedMatch.value)) selectedMatch.value = ""
   } catch {
-    data.value = {}
-    error.value = "热力数据暂时无法读取，请稍后重试"
+    if (initialLoad) {
+      data.value = {}
+      error.value = "热力数据暂时无法读取，请稍后重试"
+    }
   } finally { loading.value = false; requestInFlight = false }
 }
 
@@ -93,4 +96,5 @@ onUnmounted(() => clearInterval(refreshTimer))
 
 <style scoped>
 .heatmap-page{padding-bottom:32px}.heatmap-hero{min-height:94px;padding:16px;display:grid;grid-template-columns:180px 1fr 180px;align-items:center;text-align:center}.heatmap-hero h1{margin:4px 0 2px;font-size:25px}.heatmap-hero p{margin:0;color:var(--text-muted);font-size:11px}.back-button{justify-self:start;padding:10px 13px;border:1px solid var(--border);border-radius:10px;color:var(--text-secondary);background:var(--surface-soft);font-size:11px;font-weight:650}.refresh-note{justify-self:end;color:var(--text-muted);font-size:10px}.filter-band{margin-top:14px;padding:16px 20px;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center}.play-tabs{display:flex;gap:8px}.play-tabs button{min-width:96px;min-height:40px;padding:0 15px;border:1px solid #ded9ed;border-radius:999px;color:var(--text-secondary);background:#fff;font-size:12px;font-weight:700}.play-tabs button.active{border-color:#7562df;color:#fff;background:#7562df;box-shadow:0 8px 18px rgba(95,72,213,.2)}.match-filter{display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:10px}.match-filter select{min-width:280px;height:40px;padding:0 34px 0 12px;border:1px solid #ded9ed;border-radius:10px;color:var(--text-main);background:#fff}.filter-band p{grid-column:1/-1;margin:0;color:var(--text-muted);font-size:10px}.section-gap{margin-top:14px}.focus-card,.matrix-card{padding:20px}.focus-card .section-header>p{color:var(--text-muted);font-size:10px}.focus-grid{margin-top:16px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.focus-grid article{border:1px solid var(--border);border-radius:13px;overflow:hidden;background:#fff}.focus-grid h3{min-height:49px;margin:0;padding:12px;display:grid;place-items:center;color:#6551d9;background:#f2efff;font-size:11px;text-align:center}.focus-grid article>div{padding:18px 12px;text-align:center}.focus-grid strong,.focus-grid b,.focus-grid small{display:block}.focus-grid strong{font-size:14px}.focus-grid b{margin-top:6px;color:#6551d9;font-size:12px}.focus-grid small{margin-top:7px;color:var(--text-muted);font-size:10px}.matrix-header{display:flex;align-items:flex-end;justify-content:space-between}.matrix-header h2{margin:4px 0 0;font-size:20px}.matrix-header>span{color:var(--text-muted);font-size:10px}.matrix-table-wrap{margin:16px -20px -20px;overflow-x:auto}.matrix-table{width:100%;min-width:820px;border-collapse:collapse;table-layout:fixed}.matrix-table th,.matrix-table td{padding:13px 12px;border-top:1px solid var(--border);border-right:1px solid var(--border);text-align:center}.matrix-table thead th{color:#6551d9;background:#f2efff;font-size:11px}.matrix-table thead th:first-child{width:230px}.matrix-table tr>*:last-child{border-right:0}.matrix-table tbody th{text-align:left;background:#fff}.matrix-table tbody th b,.matrix-table tbody th span{display:block}.matrix-table tbody th b{font-size:11px}.matrix-table tbody th span{margin-top:4px;color:var(--text-muted);font-size:9px;font-weight:500}.matrix-table td strong,.matrix-table td small{display:block}.matrix-table td strong{color:#4b3978;font-size:14px}.matrix-table td small{margin-top:3px;color:#5c4c7e;font-size:9px}.matrix-table td>span{color:#b1b1b3}@media(max-width:1000px){.focus-grid{grid-template-columns:repeat(2,1fr)}.filter-band{grid-template-columns:1fr}.match-filter select{flex:1}.heatmap-hero{grid-template-columns:1fr;gap:12px;text-align:left}.refresh-note{justify-self:start}}@media(max-width:700px){.play-tabs{overflow-x:auto}.play-tabs button{white-space:nowrap}.match-filter{align-items:stretch;flex-direction:column}.match-filter select{min-width:0;width:100%}.focus-grid{grid-template-columns:1fr}.matrix-header{align-items:flex-start;flex-direction:column;gap:10px}}
+.filter-band{grid-template-columns:1fr}.play-tabs{justify-content:center}.match-filter{justify-self:center}.filter-band p{text-align:center}
 </style>

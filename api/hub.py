@@ -14,7 +14,7 @@ from api.portal import (
     format_match_row,
     load_aliases,
     load_caizhanyun_match_references,
-    load_order_matches,
+    load_hot_play_matches,
 )
 from common.pass_utils import normalize_pass_summary
 from common.platform_registry import default_platform_metadata
@@ -71,9 +71,15 @@ def _column_name(columns, *candidates):
 
 
 def archive_date_sql(cursor, alias="o"):
+    expression, _join_sql = archive_date_source(cursor, alias)
+    return expression
+
+
+def archive_date_source(cursor, alias="o"):
     order_columns = table_columns(cursor, "orders")
     match_columns = table_columns(cursor, "order_matches")
     candidates = []
+    match_dates = []
 
     bet_end = _column_name(
         order_columns,
@@ -88,24 +94,27 @@ def archive_date_sql(cursor, alias="o"):
     if bet_end:
         candidates.append(f"DATE({alias}.`{bet_end}`)")
     if "deadline_time" in match_columns:
-        candidates.append(
-            "(SELECT DATE(omd.deadline_time) FROM order_matches omd "
-            f"WHERE omd.order_id={alias}.id AND omd.deadline_time IS NOT NULL "
-            "ORDER BY omd.id LIMIT 1)"
-        )
+        match_dates.append("MIN(DATE(deadline_time)) AS deadline_date")
 
     plan_date = _column_name(order_columns, "planDate", "plan_date")
     if plan_date:
         candidates.append(f"DATE({alias}.`{plan_date}`)")
-    if "publish_time" in order_columns:
-        candidates.append(f"DATE({alias}.publish_time)")
 
     if "match_date" in match_columns:
-        candidates.append(
-            "(SELECT omm.match_date FROM order_matches omm "
-            f"WHERE omm.order_id={alias}.id AND omm.match_date IS NOT NULL "
-            "ORDER BY omm.id LIMIT 1)"
+        match_dates.append("MIN(match_date) AS match_date")
+
+    if match_dates:
+        join_sql = (
+            " LEFT JOIN (SELECT order_id," + ",".join(match_dates)
+            + " FROM order_matches GROUP BY order_id) archive_match "
+            f"ON archive_match.order_id={alias}.id "
         )
+        if "deadline_time" in match_columns:
+            candidates.append("archive_match.deadline_date")
+        if "match_date" in match_columns:
+            candidates.append("archive_match.match_date")
+    else:
+        join_sql = ""
 
     first_viewed = _column_name(
         order_columns,
@@ -122,10 +131,16 @@ def archive_date_sql(cursor, alias="o"):
     )
     if first_synced:
         candidates.append(f"DATE({alias}.`{first_synced}`)")
+    if "publish_time" in order_columns:
+        candidates.append(f"DATE({alias}.publish_time)")
     if "created_time" in order_columns:
         candidates.append(f"DATE({alias}.created_time)")
 
-    return "COALESCE(" + ",".join(candidates) + ")"
+    if not candidates:
+        return "NULL", join_sql
+    if len(candidates) == 1:
+        return candidates[0], join_sql
+    return "COALESCE(" + ",".join(candidates) + ")", join_sql
 
 
 def current_event_day(cursor):
@@ -1228,13 +1243,17 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
     conn=get_conn(); cursor=conn.cursor(pymysql.cursors.DictCursor)
     try:
         page=max(1,page); page_size=max(20,min(200,page_size))
-        archive_date=archive_date_sql(cursor,"o")
+        archive_date, archive_join = archive_date_source(cursor,"o")
         if not month:
             cursor.execute(
                 f"""
-                SELECT DATE_FORMAT(MAX({archive_date}),'%Y-%m') AS m
+                SELECT DATE_FORMAT({archive_date},'%Y-%m') AS m
                 FROM orders o
+                {archive_join}
                 WHERE o.platform_id IN (1,2,3,4)
+                  AND {archive_date} IS NOT NULL
+                ORDER BY {archive_date} DESC,o.id DESC
+                LIMIT 1
                 """
             )
             latest=cursor.fetchone() or {}
@@ -1255,12 +1274,13 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
         elif status=="pending": where.append("o.result='待开奖'")
         elif status=="lost": where.append("o.result='输'")
         ws=" AND ".join(where)
-        cursor.execute(f"SELECT COUNT(*) AS c FROM orders o WHERE {ws}",tuple(params)); total=intv(cursor.fetchone()["c"])
+        cursor.execute(f"SELECT COUNT(*) AS c FROM orders o {archive_join} WHERE {ws}",tuple(params)); total=intv(cursor.fetchone()["c"])
         cursor.execute(f"""
             SELECT o.id,o.platform_id,o.platform_order_id,o.user_id,o.nickname,o.match_name,o.pass_summary,o.pass_composition,o.bet_count,o.selection,o.odds_text,o.stake,o.follow_num,o.result,o.profit,o.platform_bonus,COALESCE(o.publish_time,o.created_time) AS order_time,
                    {archive_date} AS _date,
                    us.win_orders,us.lose_orders,us.hit_rate,up.avatar_url
             FROM orders o
+            {archive_join}
             LEFT JOIN user_statistics us
               ON us.platform_id=o.platform_id AND us.user_id=o.user_id
             LEFT JOIN user_profiles_ext up
@@ -1270,7 +1290,7 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
         rows=cursor.fetchall()
         alias_map=load_aliases(cursor)
         match_references=load_caizhanyun_match_references(cursor,alias_map)
-        grouped=load_order_matches(cursor,[intv(row.get("id")) for row in rows])
+        grouped=load_hot_play_matches(cursor,[intv(row.get("id")) for row in rows])
         for r in rows:
             r["platform_name"]=platform_name(r["platform_id"]); r["stake"]=money(r["stake"]); r["profit"]=money(r["profit"]); r["platform_bonus"]=money(r["platform_bonus"]); r["follow_num"]=intv(r["follow_num"])
             r["pass_summary"]=normalize_pass_summary(r.get("pass_summary")) or r.get("pass_composition") or ""
@@ -1279,7 +1299,7 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
                 r["odds_text"]=" / ".join(item["odds"] for item in r["matches"] if item.get("odds"))
             wins=intv(r.get("win_orders")); losses=intv(r.get("lose_orders"))
             r["history_record"]=f"{wins}胜{losses}负" if wins+losses else "--"
-        cursor.execute(f"SELECT DISTINCT DATE_FORMAT({archive_date},'%Y-%m') AS m FROM orders o WHERE o.platform_id IN (1,2,3,4) AND (%s=0 OR o.platform_id=%s) ORDER BY m DESC LIMIT 24",(platform_id,platform_id))
+        cursor.execute(f"SELECT DISTINCT DATE_FORMAT({archive_date},'%Y-%m') AS m FROM orders o {archive_join} WHERE o.platform_id IN (1,2,3,4) AND (%s=0 OR o.platform_id=%s) ORDER BY m DESC LIMIT 24",(platform_id,platform_id))
         months=[x["m"] for x in cursor.fetchall() if x.get("m")]
         summary_where=[f"DATE_FORMAT({archive_date},'%Y-%m')=%s","o.platform_id IN (1,2,3,4)"]
         summary_params=[month]
@@ -1294,13 +1314,13 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
                    IFNULL(SUM(stake),0) AS total_stake,
                    IFNULL(SUM(follow_num),0) AS followers,
                    IFNULL(SUM(platform_bonus),0) AS total_bonus
-            FROM orders o WHERE {summary_sql}
+            FROM orders o {archive_join} WHERE {summary_sql}
         """,tuple(summary_params))
         summary=cursor.fetchone() or {}
         summary={"total":intv(summary.get("total")),"won":intv(summary.get("won")),"lost":intv(summary.get("lost")),"pending":intv(summary.get("pending")),"total_stake":money(summary.get("total_stake")),"followers":intv(summary.get("followers")),"total_bonus":money(summary.get("total_bonus"))}
         cursor.execute(f"""
             SELECT {archive_date} AS day,COUNT(*) AS count
-            FROM orders o WHERE {summary_sql}
+            FROM orders o {archive_join} WHERE {summary_sql}
             GROUP BY {archive_date} ORDER BY day
         """,tuple(summary_params))
         date_counts=[{"day":str(item.get("day")),"count":intv(item.get("count"))} for item in cursor.fetchall() if item.get("day")]

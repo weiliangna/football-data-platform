@@ -861,6 +861,10 @@ def decode_primary_bet(
             "labels":
                 labels,
 
+            "peilvs":
+                meta.get("peilvs")
+                or [],
+
             "letpoint":
                 meta.get(
                     "letpoint"

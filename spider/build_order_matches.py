@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 
 import pymysql
@@ -14,6 +15,7 @@ from common.platform_field_mapping import (
     resolve_caizhanyun_handicap,
 )
 from database.mysql import get_conn
+from spider.magicangle_contract import build_option_detail
 
 
 PLATFORM_ID = 1
@@ -200,6 +202,7 @@ def build_structured_legs(decoded_items, alias_map=None):
                 ).strip(),
                 "play_type": play_type,
                 "selection": selection,
+                "option_detail": build_option_detail(item),
                 "handicap": handicap_result["handicap"],
                 "handicap_source": handicap_result["source"],
                 "used_legacy_fallback": False,
@@ -496,6 +499,7 @@ def upsert_order_matches(
                         identity_quality=%s,
                         league=%s,
                         selection=%s,
+                        option_detail=%s,
                         handicap=%s
                     WHERE id=%s
                     """,
@@ -510,6 +514,7 @@ def upsert_order_matches(
                         leg["identity_quality"],
                         leg["league"],
                         leg["selection"],
+                        json.dumps(leg.get("option_detail") or [], ensure_ascii=False),
                         leg["handicap"],
                         existing["id"],
                     ),
@@ -523,6 +528,7 @@ def upsert_order_matches(
                         match_key=%s,
                         league=%s,
                         selection=%s,
+                        option_detail=%s,
                         handicap=%s
                     WHERE id=%s
                     """,
@@ -531,6 +537,7 @@ def upsert_order_matches(
                         leg["match_key"],
                         leg["league"],
                         leg["selection"],
+                        json.dumps(leg.get("option_detail") or [], ensure_ascii=False),
                         leg["handicap"],
                         existing["id"],
                     ),
@@ -557,6 +564,7 @@ def upsert_order_matches(
                     league,
                     play_type,
                     selection,
+                    option_detail,
                     handicap,
                     deadline_time,
                     result,
@@ -565,7 +573,7 @@ def upsert_order_matches(
                 VALUES
                 (
                     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                    %s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,
                     '待开奖',
                     0
                 )
@@ -584,6 +592,7 @@ def upsert_order_matches(
                     leg["league"],
                     leg["play_type"],
                     leg["selection"],
+                    json.dumps(leg.get("option_detail") or [], ensure_ascii=False),
                     leg["handicap"],
                     leg["deadline_time"],
                 ),
@@ -600,6 +609,7 @@ def upsert_order_matches(
                     league,
                     play_type,
                     selection,
+                    option_detail,
                     handicap,
                     deadline_time,
                     result,
@@ -607,7 +617,7 @@ def upsert_order_matches(
                 )
                 VALUES
                 (
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                     '待开奖',
                     0
                 )
@@ -620,6 +630,7 @@ def upsert_order_matches(
                     leg["league"],
                     leg["play_type"],
                     leg["selection"],
+                    json.dumps(leg.get("option_detail") or [], ensure_ascii=False),
                     leg["handicap"],
                     leg["deadline_time"],
                 ),

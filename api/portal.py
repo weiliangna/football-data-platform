@@ -1270,7 +1270,7 @@ def enrich_order(
 
 
 
-def build_current_context(cursor):
+def build_current_context(cursor, include_profiles=False):
     cursor.execute("SELECT NOW() AS now_time")
     now = cursor.fetchone()["now_time"]
     target_day = current_event_day(now)
@@ -1280,7 +1280,7 @@ def build_current_context(cursor):
         cursor,
         alias_map,
     )
-    profiles = load_profiles(cursor)
+    profiles = load_profiles(cursor) if include_profiles else {}
     schedule_by_code, schedule_by_name = load_match_schedule(cursor)
 
     orders = load_orders_for_day(
@@ -1434,6 +1434,72 @@ def aggregate_today_hot_plays(ctx):
     return result
 
 
+def load_recent_user_metrics(cursor, user_keys):
+    """Load page-level seven-day metrics without per-user SQL queries."""
+    keys = [
+        (intv(platform_id), intv(user_id))
+        for platform_id, user_id in user_keys
+        if intv(platform_id) and intv(user_id)
+    ]
+    if not keys:
+        return {}
+
+    pair_sql = " OR ".join(
+        ["(o.platform_id=%s AND o.user_id=%s)" for _ in keys]
+    )
+    pair_params = [value for key in keys for value in key]
+    cursor.execute(
+        f"""
+        SELECT
+            o.platform_id,
+            o.user_id,
+            COUNT(*) AS orders7d,
+            IFNULL(SUM(o.stake),0) AS self_buy7d,
+            IFNULL(SUM(o.follow_num),0) AS followers7d,
+            IFNULL(SUM(CASE WHEN o.result<>'待开奖' THEN o.profit ELSE 0 END),0) AS profit7d
+        FROM orders o
+        WHERE ({pair_sql})
+          AND DATE(DATE_SUB(COALESCE(o.publish_time,o.created_time),INTERVAL 6 HOUR))
+              BETWEEN DATE_SUB(DATE(DATE_SUB(NOW(),INTERVAL 6 HOUR)),INTERVAL 6 DAY)
+                  AND DATE(DATE_SUB(NOW(),INTERVAL 6 HOUR))
+        GROUP BY o.platform_id,o.user_id
+        """,
+        tuple(pair_params),
+    )
+    metrics = {
+        (intv(row.get("platform_id")), intv(row.get("user_id"))): dict(row)
+        for row in cursor.fetchall() or []
+    }
+    cursor.execute(
+        f"""
+        SELECT
+            o.platform_id,
+            o.user_id,
+            SUBSTRING_INDEX(
+                GROUP_CONCAT(
+                    CASE WHEN o.result IN ('赢','输') THEN o.result END
+                    ORDER BY o.id DESC SEPARATOR ','
+                ),
+                ',',
+                5
+            ) AS recent_results
+        FROM orders o
+        WHERE ({pair_sql})
+        GROUP BY o.platform_id,o.user_id
+        """,
+        tuple(pair_params),
+    )
+    for row in cursor.fetchall() or []:
+        key = (intv(row.get("platform_id")), intv(row.get("user_id")))
+        metric = metrics.setdefault(key, {})
+        metric["recent5"] = [
+            value
+            for value in str(row.get("recent_results") or "").split(",")
+            if value in {"赢", "输"}
+        ][:5]
+    return metrics
+
+
 def build_dashboard_response():
     conn = None
     cursor = None
@@ -1442,7 +1508,7 @@ def build_dashboard_response():
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        ctx = build_current_context(cursor)
+        ctx = build_current_context(cursor, include_profiles=True)
         target_day = ctx["day"]
         now = ctx["now"]
         alias_map = ctx["alias_map"]
@@ -1812,8 +1878,17 @@ def user_detail(platform_id: int, user_id: int):
             cursor,
             alias_map,
         )
-        profiles = load_profiles(cursor)
-        profile = profiles.get((platform_id, user_id), {})
+        cursor.execute(
+            """
+            SELECT nickname,avatar_url
+            FROM user_profiles_ext
+            WHERE platform_id=%s AND user_id=%s
+            LIMIT 1
+            """,
+            (platform_id, user_id),
+        )
+        profile = cursor.fetchone() or {}
+        profiles = {(platform_id, user_id): profile}
 
         cursor.execute(
             """
@@ -1838,10 +1913,14 @@ def user_detail(platform_id: int, user_id: int):
         )
         orders = cursor.fetchall()
 
-        grouped = load_order_matches(
+        grouped = load_hot_play_matches(
             cursor,
             [intv(order.get("id")) for order in orders]
         )
+        recent = load_recent_user_metrics(
+            cursor,
+            [(platform_id, user_id)],
+        ).get((platform_id, user_id), {})
 
         data_orders = [
             enrich_order(
@@ -1885,6 +1964,12 @@ def user_detail(platform_id: int, user_id: int):
                     "total_profit": money(stat.get("total_profit")),
                     "roi": money(stat.get("roi")),
                     "follow_num": intv(stat.get("follow_num")),
+                    "expert_score": money(stat.get("expert_score")),
+                    "self_buy7d": money(recent.get("self_buy7d")),
+                    "orders7d": intv(recent.get("orders7d")),
+                    "followers7d": intv(recent.get("followers7d")),
+                    "profit7d": money(recent.get("profit7d")),
+                    "recent5": recent.get("recent5") or [],
                 },
                 "orders": data_orders,
             },
@@ -2237,13 +2322,23 @@ def users(
             tuple(query_params)
         )
 
+        fetched_rows = cursor.fetchall()
+        recent_metrics = load_recent_user_metrics(
+            cursor,
+            [
+                (row.get("platform_id"), row.get("user_id"))
+                for row in fetched_rows
+            ],
+        )
         rows = []
 
         for index, row in enumerate(
-            cursor.fetchall(),
+            fetched_rows,
             start=offset + 1
         ):
             pid = intv(row.get("platform_id"))
+            uid = intv(row.get("user_id"))
+            recent = recent_metrics.get((pid, uid), {})
             rows.append(
                 {
                     "rank": index,
@@ -2252,7 +2347,7 @@ def users(
                         pid,
                         "未知平台"
                     ),
-                    "user_id": intv(row.get("user_id")),
+                    "user_id": uid,
                     "nickname": row.get("nickname") or "未知用户",
                     "avatar_url": row.get("avatar_url") or "",
                     "total_orders": intv(row.get("total_orders")),
@@ -2263,6 +2358,11 @@ def users(
                     "roi": money(row.get("roi")),
                     "follow_num": intv(row.get("follow_num")),
                     "expert_score": money(row.get("expert_score")),
+                    "self_buy7d": money(recent.get("self_buy7d")),
+                    "orders7d": intv(recent.get("orders7d")),
+                    "followers7d": intv(recent.get("followers7d")),
+                    "profit7d": money(recent.get("profit7d")),
+                    "recent5": recent.get("recent5") or [],
                 }
             )
 

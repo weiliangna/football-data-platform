@@ -244,6 +244,44 @@ def _peilv_type(play_type, code):
     return f"{prefix}{code}" if prefix else ""
 
 
+def build_option_detail(decoded_item):
+    """Map selected option codes to verified SP values from peilvs."""
+    play_type = str(
+        decoded_item.get("play_type")
+        or decoded_item.get("market_name")
+        or ""
+    )
+    labels = (
+        decoded_item.get("selection")
+        or decoded_item.get("labels")
+        or []
+    )
+    source_match = decoded_item.get("source_match") or {}
+    prices = (
+        decoded_item.get("peilvs")
+        or source_match.get("peilvs")
+        or []
+    )
+    prices_by_type = {
+        str(item.get("type") or ""): item
+        for item in prices
+        if isinstance(item, dict)
+    }
+    result = []
+    for code, label in zip(
+        _selection_codes(play_type, decoded_item.get("selection_code")),
+        labels,
+    ):
+        source = prices_by_type.get(_peilv_type(play_type, code), {})
+        odds = source.get("peilv")
+        if odds in (None, ""):
+            odds = source.get("odds")
+        if odds in (None, ""):
+            odds = source.get("sp")
+        result.append({"name": str(label), "odds": odds})
+    return result
+
+
 def resolve_leg_result(decoded_item):
     match = decoded_item.get("source_match") or {}
     prices = match.get("peilvs") or []
@@ -352,13 +390,7 @@ def build_record(
         )
         leg_result = resolve_leg_result(item)
         prices = item["source_match"].get("peilvs") or []
-        option_detail = [
-            {
-                "name": label,
-                "odds": None,
-            }
-            for label in item["selection"]
-        ]
+        option_detail = build_option_detail(item)
         legs.append(
             {
                 "source_match_code": item["match_id"],

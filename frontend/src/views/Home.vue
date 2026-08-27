@@ -71,7 +71,6 @@
               :key="personKey(person)"
               type="button"
               :class="{ selected: personKey(person) === selectedKey }"
-              @mouseenter="select(person)"
               @focus="select(person)"
               @click="select(person)"
             >
@@ -168,17 +167,25 @@ const currentTime = computed(() => now.value.toLocaleTimeString("zh-CN", { hour1
 async function load() {
   if (requestInFlight) return
   requestInFlight = true
-  loading.value = true
+  const initialLoad = !Object.keys(data.value).length
+  if (initialLoad) loading.value = true
   error.value = ""
   try {
     const response = await axios.get("/api/portal/dashboard", { timeout: 25000 })
     if (!response.data || response.data.code !== 200) throw new Error()
-    data.value = response.data.data || {}
-    const first = (data.value.sender_ranking || [])[0]
-    selectedKey.value = first ? personKey(first) : ""
+    const next = response.data.data || {}
+    const nextRanking = next.sender_ranking || []
+    const stillVisible = nextRanking.some((item) => personKey(item) === selectedKey.value)
+    data.value = next
+    if (!stillVisible) {
+      const first = nextRanking[0]
+      selectedKey.value = first ? personKey(first) : ""
+    }
   } catch {
-    data.value = {}
-    error.value = "实时数据暂时无法读取，请稍后重试或检查接口连接状态"
+    if (initialLoad) {
+      data.value = {}
+      error.value = "实时数据暂时无法读取，请稍后重试或检查接口连接状态"
+    }
   } finally {
     loading.value = false
     requestInFlight = false

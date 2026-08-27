@@ -79,6 +79,7 @@ class FakeOrderMatchCursor:
                 match_key,
                 league,
                 selection,
+                option_detail,
                 handicap,
                 row_id,
             ) = params
@@ -93,6 +94,7 @@ class FakeOrderMatchCursor:
                     "match_key": match_key,
                     "league": league,
                     "selection": selection,
+                    "option_detail": option_detail,
                     "handicap": handicap,
                 }
             )
@@ -108,6 +110,7 @@ class FakeOrderMatchCursor:
                 league,
                 play_type,
                 selection,
+                option_detail,
                 handicap,
                 deadline_time,
             ) = params
@@ -121,6 +124,7 @@ class FakeOrderMatchCursor:
                     "league": league,
                     "play_type": play_type,
                     "selection": selection,
+                    "option_detail": option_detail,
                     "handicap": handicap,
                     "deadline_time": deadline_time,
                     "result": "待开奖",

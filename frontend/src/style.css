@@ -52,10 +52,16 @@ body,
   margin: 0;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   min-height: 100vh;
   overflow-x: hidden;
-  background: var(--app-bg);
+  background:
+    radial-gradient(circle at 84% -10%, rgba(217, 255, 53, .13), transparent 30%),
+    linear-gradient(180deg, #f8f8f5 0, var(--app-bg) 340px);
 }
 
 a {
@@ -78,6 +84,10 @@ select,
 
 button {
   cursor: pointer;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px) scale(.99);
 }
 
 button:disabled {

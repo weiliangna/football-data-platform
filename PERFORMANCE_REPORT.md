@@ -216,3 +216,33 @@ done
 
 ⑤ 系统盘备份、日志、MySQL 运行文件增长风险
 影响：★★★★☆　优化收益：★★★★☆
+
+## 9. 2026-08-27 页面可靠性专项
+
+### 部署前公开接口复测
+
+| 接口 | HTTP | 总耗时 | 证据结论 |
+|---|---:|---:|---|
+| `/api/hub/results?page=1&page_size=5` | 500 | 0.188s | 赛果页失败来自后端日期归档 SQL，不是 Vue 空状态 |
+| `/api/portal/dashboard` | 200 | 12.032s | 返回首屏超时兜底，生产尚未部署最新轻量查询 |
+| `/api/portal/schemes?page=1&page_size=1` | 200 | 2.641s | 可用但仍偏慢 |
+| `/api/portal/analysis` | 200 | 8.172s | 可用但统计上下文偏重 |
+| `/api/portal/heatmap` | 200 | 7.859s | 可用但统计上下文偏重 |
+| `/api/portal/users?page=1&page_size=1` | 200 | 0.078s | 用户列表基础查询正常 |
+| `/api/portal/user/1/302798` | 200 | 3.734s | 用户详情可用，完整赛果关联拖慢响应 |
+| `/api/hub/users?limit=5` | 200 | 28.407s | 原等级接口存在逐用户最近战绩 N+1，不适合作为前台列表源 |
+
+### 本轮修复
+
+- `api/hub.py`：归档日期改为一次聚合 `order_matches` 后连接，移除聚合表达式中的逐订单相关子查询；结果列表使用不关联 `match_results` 的轻量订单腿读取。
+- `api/portal.py`：用户列表仅针对当前页批量汇总 7 日自购、跟单、发单、盈利和最近 5 场；用户详情只读取目标档案，并使用轻量订单腿查询；分析和热力不再加载无用的全量用户档案。
+- `Home.vue` / `Heatmap.vue`：30 秒后台刷新保留现有内容，不再周期性切回整页骨架屏；排行榜取消 hover 即切换，避免高频重排。
+- `magicangle_contract.py` / `caizhanyun_enrich.py` / `build_order_matches.py`：把真实 `peilvs.type + peilv` 映射为选中项 `option_detail`，供彩站云和州运宝方案、分析与热力页显示 SP；未伪造缺失赔率。
+- 前端视觉：四个热力玩法居中；表格表头吸附；卡片阴影、按压反馈、滚动与刷新状态统一；移动端规则保留。
+
+### 验证
+
+- Python compile：通过。
+- 离线 unittest：146 项通过。
+- Vite production build：通过，主 JS 195.24 kB（gzip 68.15 kB），主 CSS 50.68 kB（gzip 9.63 kB）；赛事数据两页继续独立懒加载。
+- 生产 After benchmark：代码尚未部署，无法提供真实数字；部署后必须重新测上述接口，不能把离线测试耗时当作生产 API 耗时。
