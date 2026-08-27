@@ -13,11 +13,12 @@ from api.settlement import check_play
 from api.portal import (
     format_match_row,
     load_aliases,
-    load_hongrui_match_references,
+    load_caizhanyun_match_references,
     load_order_matches,
 )
 from common.pass_utils import normalize_pass_summary
 from common.platform_registry import default_platform_metadata
+from common.match_identity import table_columns
 
 
 router = APIRouter(
@@ -58,6 +59,73 @@ def split_options(selection):
 
 def event_day_sql(alias="o"):
     return f"DATE(DATE_SUB(COALESCE({alias}.publish_time,{alias}.created_time), INTERVAL 6 HOUR))"
+
+
+def _column_name(columns, *candidates):
+    lookup = {str(value).lower(): value for value in columns}
+    for candidate in candidates:
+        value = lookup.get(candidate.lower())
+        if value:
+            return value
+    return ""
+
+
+def archive_date_sql(cursor, alias="o"):
+    order_columns = table_columns(cursor, "orders")
+    match_columns = table_columns(cursor, "order_matches")
+    candidates = []
+
+    bet_end = _column_name(
+        order_columns,
+        "betEndTime",
+        "bet_end_time",
+        "expireTimestamp",
+        "expire_timestamp",
+        "deadline",
+        "endTime",
+        "end_time",
+    )
+    if bet_end:
+        candidates.append(f"DATE({alias}.`{bet_end}`)")
+    if "deadline_time" in match_columns:
+        candidates.append(
+            "(SELECT DATE(omd.deadline_time) FROM order_matches omd "
+            f"WHERE omd.order_id={alias}.id AND omd.deadline_time IS NOT NULL "
+            "ORDER BY omd.id LIMIT 1)"
+        )
+
+    plan_date = _column_name(order_columns, "planDate", "plan_date")
+    if plan_date:
+        candidates.append(f"DATE({alias}.`{plan_date}`)")
+    if "publish_time" in order_columns:
+        candidates.append(f"DATE({alias}.publish_time)")
+
+    if "match_date" in match_columns:
+        candidates.append(
+            "(SELECT omm.match_date FROM order_matches omm "
+            f"WHERE omm.order_id={alias}.id AND omm.match_date IS NOT NULL "
+            "ORDER BY omm.id LIMIT 1)"
+        )
+
+    first_viewed = _column_name(
+        order_columns,
+        "firstViewedAt",
+        "first_viewed_at",
+    )
+    if first_viewed:
+        candidates.append(f"DATE({alias}.`{first_viewed}`)")
+
+    first_synced = _column_name(
+        order_columns,
+        "firstSyncedAt",
+        "first_synced_at",
+    )
+    if first_synced:
+        candidates.append(f"DATE({alias}.`{first_synced}`)")
+    if "created_time" in order_columns:
+        candidates.append(f"DATE({alias}.created_time)")
+
+    return "COALESCE(" + ",".join(candidates) + ")"
 
 
 def current_event_day(cursor):
@@ -1160,18 +1228,26 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
     conn=get_conn(); cursor=conn.cursor(pymysql.cursors.DictCursor)
     try:
         page=max(1,page); page_size=max(20,min(200,page_size))
+        archive_date=archive_date_sql(cursor,"o")
         if not month:
-            cursor.execute("SELECT DATE_FORMAT(CURDATE(),'%Y-%m') AS m")
-            month=cursor.fetchone()["m"]
+            cursor.execute(
+                f"""
+                SELECT DATE_FORMAT(MAX({archive_date}),'%Y-%m') AS m
+                FROM orders o
+                WHERE o.platform_id IN (1,2,3,4)
+                """
+            )
+            latest=cursor.fetchone() or {}
+            month=latest.get("m") or datetime.now().strftime("%Y-%m")
         where=[
-            f"DATE_FORMAT({event_day_sql('o')},'%Y-%m')=%s",
+            f"DATE_FORMAT({archive_date},'%Y-%m')=%s",
             "o.platform_id IN (1,2,3,4)",
         ]
         params=[month]
         if platform_id>0:
             where.append("o.platform_id=%s"); params.append(platform_id)
         if day:
-            where.append(f"{event_day_sql('o')}=%s"); params.append(day)
+            where.append(f"{archive_date}=%s"); params.append(day)
         keyword=str(keyword or "").strip()
         if keyword:
             like=f"%{keyword}%"; where.append("(o.nickname LIKE %s OR o.platform_order_id LIKE %s OR o.match_name LIKE %s OR o.selection LIKE %s)"); params.extend([like,like,like,like])
@@ -1182,29 +1258,30 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
         cursor.execute(f"SELECT COUNT(*) AS c FROM orders o WHERE {ws}",tuple(params)); total=intv(cursor.fetchone()["c"])
         cursor.execute(f"""
             SELECT o.id,o.platform_id,o.platform_order_id,o.user_id,o.nickname,o.match_name,o.pass_summary,o.pass_composition,o.bet_count,o.selection,o.odds_text,o.stake,o.follow_num,o.result,o.profit,o.platform_bonus,COALESCE(o.publish_time,o.created_time) AS order_time,
+                   {archive_date} AS _date,
                    us.win_orders,us.lose_orders,us.hit_rate,up.avatar_url
             FROM orders o
             LEFT JOIN user_statistics us
               ON us.platform_id=o.platform_id AND us.user_id=o.user_id
             LEFT JOIN user_profiles_ext up
               ON up.platform_id=o.platform_id AND up.user_id=o.user_id
-            WHERE {ws} ORDER BY order_time DESC,o.id DESC LIMIT %s OFFSET %s
+            WHERE {ws} ORDER BY _date DESC,order_time DESC,o.id DESC LIMIT %s OFFSET %s
         """,tuple(params+[page_size,(page-1)*page_size]))
         rows=cursor.fetchall()
         alias_map=load_aliases(cursor)
-        hongrui_references=load_hongrui_match_references(cursor,alias_map)
+        match_references=load_caizhanyun_match_references(cursor,alias_map)
         grouped=load_order_matches(cursor,[intv(row.get("id")) for row in rows])
         for r in rows:
             r["platform_name"]=platform_name(r["platform_id"]); r["stake"]=money(r["stake"]); r["profit"]=money(r["profit"]); r["platform_bonus"]=money(r["platform_bonus"]); r["follow_num"]=intv(r["follow_num"])
             r["pass_summary"]=normalize_pass_summary(r.get("pass_summary")) or r.get("pass_composition") or ""
-            r["matches"]=[format_match_row(item,alias_map,r["platform_id"],hongrui_references) for item in grouped.get(intv(r.get("id")),[])]
+            r["matches"]=[format_match_row(item,alias_map,r["platform_id"],match_references) for item in grouped.get(intv(r.get("id")),[])]
             if not r.get("odds_text"):
                 r["odds_text"]=" / ".join(item["odds"] for item in r["matches"] if item.get("odds"))
             wins=intv(r.get("win_orders")); losses=intv(r.get("lose_orders"))
             r["history_record"]=f"{wins}胜{losses}负" if wins+losses else "--"
-        cursor.execute("SELECT DISTINCT DATE_FORMAT("+event_day_sql('o')+",'%Y-%m') AS m FROM orders o WHERE o.platform_id IN (1,2,3,4) AND (%s=0 OR o.platform_id=%s) ORDER BY m DESC LIMIT 24",(platform_id,platform_id))
+        cursor.execute(f"SELECT DISTINCT DATE_FORMAT({archive_date},'%Y-%m') AS m FROM orders o WHERE o.platform_id IN (1,2,3,4) AND (%s=0 OR o.platform_id=%s) ORDER BY m DESC LIMIT 24",(platform_id,platform_id))
         months=[x["m"] for x in cursor.fetchall() if x.get("m")]
-        summary_where=[f"DATE_FORMAT({event_day_sql('o')},'%Y-%m')=%s","o.platform_id IN (1,2,3,4)"]
+        summary_where=[f"DATE_FORMAT({archive_date},'%Y-%m')=%s","o.platform_id IN (1,2,3,4)"]
         summary_params=[month]
         if platform_id>0:
             summary_where.append("o.platform_id=%s"); summary_params.append(platform_id)
@@ -1222,74 +1299,14 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
         summary=cursor.fetchone() or {}
         summary={"total":intv(summary.get("total")),"won":intv(summary.get("won")),"lost":intv(summary.get("lost")),"pending":intv(summary.get("pending")),"total_stake":money(summary.get("total_stake")),"followers":intv(summary.get("followers")),"total_bonus":money(summary.get("total_bonus"))}
         cursor.execute(f"""
-            SELECT {event_day_sql('o')} AS day,COUNT(*) AS count
+            SELECT {archive_date} AS day,COUNT(*) AS count
             FROM orders o WHERE {summary_sql}
-            GROUP BY {event_day_sql('o')} ORDER BY day
+            GROUP BY {archive_date} ORDER BY day
         """,tuple(summary_params))
         date_counts=[{"day":str(item.get("day")),"count":intv(item.get("count"))} for item in cursor.fetchall() if item.get("day")]
         return {"code":200,"data":{"month":month,"months":months,"rows":rows,"total":total,"page":page,"pages":math.ceil(total/page_size) if total else 1,"summary":summary,"date_counts":date_counts}}
     finally:
         cursor.close(); conn.close()
-
-
-@router.delete("/results")
-def clear_result_archive(
-    month: str,
-    confirm: str,
-    x_admin_token: str = Header(default=""),
-):
-    require_admin_token(x_admin_token)
-    month = str(month or "").strip()
-    expected = f"DELETE_RESULTS_{month}"
-    if not re.fullmatch(r"\d{4}-\d{2}", month):
-        raise HTTPException(status_code=400, detail="月份格式必须为 YYYY-MM")
-    if confirm != expected:
-        raise HTTPException(status_code=400, detail="删除确认文本不正确")
-
-    conn = get_conn()
-    cursor = conn.cursor(pymysql.cursors.DictCursor)
-    try:
-        cursor.execute(
-            f"""
-            SELECT id FROM orders o
-            WHERE o.platform_id IN (1,2,3,4)
-              AND DATE_FORMAT({event_day_sql('o')},'%Y-%m')=%s
-            """,
-            (month,),
-        )
-        order_ids = [intv(row.get("id")) for row in cursor.fetchall()]
-        deleted_matches = 0
-        if order_ids:
-            marks = ",".join(["%s"] * len(order_ids))
-            cursor.execute(
-                f"DELETE FROM settlement_logs WHERE order_id IN ({marks})",
-                tuple(order_ids),
-            )
-            cursor.execute(
-                f"DELETE FROM order_matches WHERE order_id IN ({marks})",
-                tuple(order_ids),
-            )
-            deleted_matches = cursor.rowcount
-            cursor.execute(
-                f"DELETE FROM orders WHERE id IN ({marks})",
-                tuple(order_ids),
-            )
-            deleted_orders = cursor.rowcount
-        else:
-            deleted_orders = 0
-        conn.commit()
-        return {
-            "code": 200,
-            "month": month,
-            "deleted_orders": deleted_orders,
-            "deleted_matches": deleted_matches,
-        }
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        cursor.close()
-        conn.close()
 
 
 @router.get("/platform/{platform_id}/export")

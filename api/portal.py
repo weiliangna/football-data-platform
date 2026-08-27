@@ -15,6 +15,12 @@ from common.match_identity import (
     table_columns,
 )
 from common.match_utils import parse_match_name
+from common.match_utils import match_pair_similarity
+from common.bet_aggregation import (
+    STANDARD_PLAYS,
+    normalize_play_type,
+    normalize_selection_combination,
+)
 from common.pass_utils import normalize_pass_summary
 from common.platform_registry import (
     ACTIVE_PLATFORM_IDS,
@@ -34,12 +40,7 @@ PLATFORMS = {
     for platform_id, item in default_platform_metadata().items()
 }
 
-FOUR_PLAYS = (
-    "胜平负",
-    "让球胜平负",
-    "半全场",
-    "比分",
-)
+FOUR_PLAYS = STANDARD_PLAYS
 
 
 def money(value):
@@ -147,11 +148,24 @@ def current_event_day(now):
 
 def parse_datetime(value):
     if isinstance(value, datetime):
-        return value
+        return (
+            value.astimezone().replace(tzinfo=None)
+            if value.tzinfo
+            else value
+        )
 
     text = str(value or "").strip()
     if not text:
         return None
+
+    if re.fullmatch(r"\d{10,13}", text):
+        try:
+            timestamp = int(text)
+            if len(text) >= 13:
+                timestamp /= 1000
+            return datetime.fromtimestamp(timestamp)
+        except (OSError, OverflowError, ValueError):
+            return None
 
     text = text.replace("T", " ").replace("Z", "")
     for fmt in (
@@ -167,6 +181,27 @@ def parse_datetime(value):
     return None
 
 
+def order_deadline(order):
+    source = order or {}
+    for key in (
+        "betEndTime",
+        "bet_end_time",
+        "expireTimestamp",
+        "expire_timestamp",
+        "deadline",
+        "endTime",
+        "end_time",
+    ):
+        parsed = parse_datetime(source.get(key))
+        if parsed:
+            return {
+                "deadline_time": parsed,
+                "deadline_source": key,
+                "deadline_exact": True,
+            }
+    return None
+
+
 def load_aliases(cursor):
     try:
         return load_team_aliases(cursor)
@@ -174,25 +209,32 @@ def load_aliases(cursor):
         return {}
 
 
-def load_hongrui_match_references(cursor, alias_map):
-    references = {}
-    team_candidates = defaultdict(dict)
+def load_caizhanyun_match_references(cursor, alias_map):
+    references = {
+        "by_date": defaultdict(list),
+        "all": [],
+    }
     try:
+        columns = table_columns(cursor, "order_matches")
+        match_date_sql = (
+            "om.match_date"
+            if "match_date" in columns
+            else "NULL"
+        )
         cursor.execute(
-            """
+            f"""
             SELECT
                 om.match_code,
                 om.match_name,
                 om.league,
-                DATE(
-                    DATE_SUB(
-                        COALESCE(o.publish_time,o.created_time),
-                        INTERVAL 6 HOUR
-                    )
+                COALESCE(
+                    {match_date_sql},
+                    DATE(om.deadline_time),
+                    DATE(COALESCE(o.publish_time,o.created_time))
                 ) AS event_day
             FROM order_matches om
             INNER JOIN orders o ON o.id=om.order_id
-            WHERE o.platform_id=3
+            WHERE o.platform_id=1
               AND om.match_name IS NOT NULL
               AND om.match_name<>''
             ORDER BY om.id DESC
@@ -202,40 +244,64 @@ def load_hongrui_match_references(cursor, alias_map):
         for row in cursor.fetchall() or []:
             match = canonical_match(
                 alias_map,
-                3,
+                1,
                 row.get("match_name"),
             )
-            key = (
-                match["normalized_home"],
-                match["normalized_away"],
-            )
-            if not all(key):
+            if not match["normalized_home"] or not match["normalized_away"]:
                 continue
+            event_day = str(row.get("event_day") or "")
             reference = {
                 "match_code": row.get("match_code") or "",
                 "home": match["home"],
                 "away": match["away"],
                 "match_name": match["display"],
                 "league": row.get("league") or "",
-                "canonical_display_key": "|".join(key),
+                "event_day": event_day,
+                "canonical_display_key": (
+                    f"{event_day}|{match['normalized_home']}|"
+                    f"{match['normalized_away']}"
+                ),
             }
-            event_day = str(row.get("event_day") or "")
             if event_day:
-                references.setdefault(
-                    ("date", event_day, *key),
-                    reference,
-                )
-            code = str(row.get("match_code") or "").strip()
-            if code:
-                team_candidates[key].setdefault(code, reference)
-        for key, candidates in team_candidates.items():
-            if len(candidates) == 1:
-                references[("teams", *key)] = next(
-                    iter(candidates.values())
-                )
+                references["by_date"][event_day].append(reference)
+            references["all"].append(reference)
     except Exception:
-        return {}
+        return {"by_date": {}, "all": []}
     return references
+
+
+def load_hongrui_match_references(cursor, alias_map):
+    return load_caizhanyun_match_references(cursor, alias_map)
+
+
+def find_caizhanyun_reference(
+    references,
+    reference_day,
+    home,
+    away,
+):
+    if not home or not away:
+        return {}
+    date_text = str(reference_day or "")[:10]
+    candidates = list(
+        (references or {}).get("by_date", {}).get(date_text, [])
+    )
+    if not candidates:
+        return {}
+    best = None
+    best_score = 0.0
+    for candidate in candidates:
+        score, reversed_order = match_pair_similarity(
+            home,
+            away,
+            candidate.get("home"),
+            candidate.get("away"),
+        )
+        if score > best_score:
+            best_score = score
+            best = dict(candidate)
+            best["reversed_order"] = reversed_order
+    return best if best_score >= 0.62 else {}
 
 def load_profiles(cursor):
     result = {}
@@ -559,6 +625,19 @@ def load_orders_for_day(cursor, target_day, pending_only=False):
     return cursor.fetchall()
 
 
+def load_pending_orders(cursor):
+    cursor.execute(
+        """
+        SELECT o.*
+        FROM orders o
+        WHERE o.platform_id IN (1,2,3,4)
+          AND o.result='待开奖'
+        ORDER BY o.id DESC
+        """
+    )
+    return cursor.fetchall()
+
+
 def load_order_matches(cursor, order_ids):
     grouped = defaultdict(list)
     if not order_ids:
@@ -845,6 +924,17 @@ def portal_match_group_key(row, platform_id=None):
     if canonical_display_key:
         return f"display:{canonical_display_key}"
 
+    display_date = str(
+        row.get("match_date")
+        or row.get("order_event_day")
+        or ""
+    )[:10]
+    normalized_home = str(row.get("normalized_home") or "").strip()
+    normalized_away = str(row.get("normalized_away") or "").strip()
+    if display_date and normalized_home and normalized_away:
+        pair = sorted((normalized_home, normalized_away))
+        return f"date_teams:{display_date}|{pair[0]}|{pair[1]}"
+
     identity = str(
         row.get("match_identity")
         or ""
@@ -885,7 +975,7 @@ def format_match_row(
     row,
     alias_map,
     platform_id,
-    hongrui_references=None,
+    match_references=None,
 ):
     match = canonical_match(
         alias_map,
@@ -901,21 +991,22 @@ def format_match_row(
     )
     reference_day = (
         row.get("match_date")
+        or (
+            parse_datetime(row.get("deadline_time")).date()
+            if parse_datetime(row.get("deadline_time"))
+            else None
+        )
         or row.get("order_event_day")
     )
     if not reference_day and row.get("finished_time"):
         parsed_finished = parse_datetime(row.get("finished_time"))
         reference_day = parsed_finished.date() if parsed_finished else None
-    references = hongrui_references or {}
-    reference = references.get(
-        ("date", str(reference_day), *normalized_pair),
-        {},
+    reference = find_caizhanyun_reference(
+        match_references or {},
+        reference_day,
+        match["home"],
+        match["away"],
     )
-    if not reference:
-        reference = references.get(
-            ("teams", *normalized_pair),
-            references.get(normalized_pair, {}),
-        )
     home = reference.get("home") or match["home"]
     away = reference.get("away") or match["away"]
     match_name = (
@@ -934,7 +1025,11 @@ def format_match_row(
             or row.get("match_code")
             or ""
         ),
-        "match_date": row.get("match_date"),
+        "match_date": (
+            reference.get("event_day")
+            or row.get("match_date")
+            or reference_day
+        ),
         "match_key": (
             row.get("match_key")
             or match["match_key"]
@@ -993,7 +1088,7 @@ def enrich_order(
     alias_map,
     profiles,
     statistics=None,
-    hongrui_references=None,
+    match_references=None,
 ):
     platform_id = intv(order.get("platform_id"))
     user_id = intv(order.get("user_id"))
@@ -1014,7 +1109,7 @@ def enrich_order(
             row,
             alias_map,
             platform_id,
-            hongrui_references,
+            match_references,
         )
         for row in matches
     ]
@@ -1087,7 +1182,7 @@ def build_current_context(cursor):
     target_day = current_event_day(now)
 
     alias_map = load_aliases(cursor)
-    hongrui_references = load_hongrui_match_references(
+    match_references = load_caizhanyun_match_references(
         cursor,
         alias_map,
     )
@@ -1130,15 +1225,119 @@ def build_current_context(cursor):
             if source in deadline_summary:
                 deadline_summary[source] += 1
 
+    pending_orders = load_pending_orders(cursor)
+    pending_grouped = load_order_matches(
+        cursor,
+        [intv(order.get("id")) for order in pending_orders],
+    )
+    today_hot_legs = []
+    for order in pending_orders:
+        order_level_deadline = order_deadline(order)
+        for row in pending_grouped.get(intv(order.get("id")), []):
+            deadline = order_level_deadline or match_deadline(
+                    row,
+                    schedule_by_code,
+                    schedule_by_name,
+                )
+            deadline_time = (
+                deadline.get("deadline_time")
+                if deadline
+                else None
+            )
+            if not deadline_time:
+                continue
+            if deadline_time.date() != target_day:
+                continue
+            if deadline_time <= now:
+                continue
+            today_hot_legs.append((order, row, deadline))
+
     return {
         "now": now,
         "day": target_day,
         "alias_map": alias_map,
-        "hongrui_references": hongrui_references,
+        "match_references": match_references,
+        "schedule_by_code": schedule_by_code,
+        "schedule_by_name": schedule_by_name,
         "profiles": profiles,
         "unexpired": unexpired,
+        "today_hot_legs": today_hot_legs,
         "deadline_summary": deadline_summary,
     }
+
+
+def aggregate_today_hot_plays(ctx):
+    alias_map = ctx["alias_map"]
+    match_references = ctx["match_references"]
+    groups = {}
+    seen = set()
+
+    for order, row, deadline in ctx.get("today_hot_legs", []):
+        platform_id = intv(order.get("platform_id"))
+        formatted = format_match_row(
+            row,
+            alias_map,
+            platform_id,
+            match_references,
+        )
+        play_type = normalize_play_type(formatted.get("play_type"))
+        selection = normalize_selection_combination(
+            play_type,
+            formatted.get("selection"),
+        )
+        if play_type not in FOUR_PLAYS or not selection:
+            continue
+        match_key = portal_match_group_key(formatted, platform_id)
+        dedupe_key = (
+            intv(order.get("id")),
+            match_key,
+            play_type,
+            selection,
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        group_key = (match_key, play_type, selection)
+        if group_key not in groups:
+            groups[group_key] = {
+                "play_type": play_type,
+                "selection": selection,
+                "match_code": formatted.get("match_code") or "",
+                "home": formatted.get("home") or "",
+                "away": formatted.get("away") or "",
+                "match_name": formatted.get("match_name") or "",
+                "league": formatted.get("league") or "",
+                "deadline_time": deadline.get("deadline_time"),
+                "count": 0,
+            }
+        group = groups[group_key]
+        group["count"] += 1
+        candidate_time = deadline.get("deadline_time")
+        if candidate_time and (
+            not group.get("deadline_time")
+            or candidate_time < group["deadline_time"]
+        ):
+            group["deadline_time"] = candidate_time
+
+    result = []
+    for play_type in FOUR_PLAYS:
+        rows = [
+            item
+            for item in groups.values()
+            if item["play_type"] == play_type
+        ]
+        rows.sort(
+            key=lambda item: (
+                -item["count"],
+                item["match_name"],
+                item["selection"],
+            )
+        )
+        result.append({
+            "play_type": play_type,
+            "items": rows[:3],
+        })
+    return result
 
 
 @router.get("/dashboard")
@@ -1154,9 +1353,10 @@ def dashboard():
         target_day = ctx["day"]
         now = ctx["now"]
         alias_map = ctx["alias_map"]
-        hongrui_references = ctx["hongrui_references"]
+        match_references = ctx["match_references"]
         profiles = ctx["profiles"]
         unexpired = ctx["unexpired"]
+        hot_plays = aggregate_today_hot_plays(ctx)
 
         yesterday = target_day - timedelta(days=1)
 
@@ -1268,7 +1468,7 @@ def dashboard():
                     matches,
                     alias_map,
                     profiles,
-                    hongrui_references=hongrui_references,
+                    match_references=match_references,
                 )
             )
 
@@ -1324,6 +1524,7 @@ def dashboard():
                 "metrics": metrics,
                 "platform_bets": platform_rows,
                 "sender_ranking": ranking,
+                "hot_plays": hot_plays,
             },
         }
 
@@ -1414,7 +1615,7 @@ def schemes(
             [intv(order.get("id")) for order in orders]
         )
         alias_map = load_aliases(cursor)
-        hongrui_references = load_hongrui_match_references(
+        match_references = load_caizhanyun_match_references(
             cursor,
             alias_map,
         )
@@ -1428,7 +1629,7 @@ def schemes(
                 alias_map,
                 profiles,
                 statistics,
-                hongrui_references,
+                match_references,
             )
             for order in orders
         ]
@@ -1471,7 +1672,7 @@ def user_detail(platform_id: int, user_id: int):
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
         alias_map = load_aliases(cursor)
-        hongrui_references = load_hongrui_match_references(
+        match_references = load_caizhanyun_match_references(
             cursor,
             alias_map,
         )
@@ -1512,7 +1713,7 @@ def user_detail(platform_id: int, user_id: int):
                 grouped.get(intv(order.get("id")), []),
                 alias_map,
                 profiles,
-                hongrui_references=hongrui_references,
+                match_references=match_references,
             )
             for order in orders
         ]
@@ -1569,59 +1770,56 @@ def user_detail(platform_id: int, user_id: int):
 
 def aggregate_heatmap(ctx, play_type):
     alias_map = ctx["alias_map"]
-    hongrui_references = ctx["hongrui_references"]
+    match_references = ctx["match_references"]
     match_groups = {}
-    platform_total = defaultdict(int)
-
-    for order, matches in ctx["unexpired"]:
+    seen = set()
+    for order, row, _deadline in ctx.get("today_hot_legs", []):
         platform_id = intv(order.get("platform_id"))
-
-        for row in matches:
-            if str(row.get("play_type") or "") != play_type:
-                continue
-
-            formatted = format_match_row(
-                row,
-                alias_map,
-                platform_id,
-                hongrui_references,
-            )
-
-            key = portal_match_group_key(
-                formatted,
-                platform_id,
-            )
-
-            if key not in match_groups:
-                match_groups[key] = {
-                    "platform_id": formatted["platform_id"],
-                    "match_code": formatted["match_code"],
-                    "match_date": formatted["match_date"],
-                    "match_key": formatted["match_key"],
-                    "match_identity": formatted["match_identity"],
-                    "identity_quality": formatted["identity_quality"],
-                    "home": formatted["home"],
-                    "away": formatted["away"],
-                    "match_name": formatted["match_name"],
-                    "league": formatted["league"],
-                    "option_counts": defaultdict(int),
-                    "option_odds": {},
-                    "platform_counts": defaultdict(
-                        lambda: defaultdict(int)
-                    ),
-                }
-
-            group = match_groups[key]
-
-            for option in split_options(
-                formatted["selection"]
-            ):
-                group["option_counts"][option] += 1
-                odds = option_odds(row, option)
-                if odds and option not in group["option_odds"]:
-                    group["option_odds"][option] = odds
-                group["platform_counts"][platform_id][option] += 1
-                platform_total[(platform_id, option)] += 1
+        normalized_play = normalize_play_type(row.get("play_type"))
+        if normalized_play != play_type:
+            continue
+        formatted = format_match_row(
+            row,
+            alias_map,
+            platform_id,
+            match_references,
+        )
+        option = normalize_selection_combination(
+            normalized_play,
+            formatted["selection"],
+        )
+        if not option:
+            continue
+        key = portal_match_group_key(formatted, platform_id)
+        dedupe_key = (
+            intv(order.get("id")),
+            key,
+            normalized_play,
+            option,
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        if key not in match_groups:
+            match_groups[key] = {
+                "platform_id": formatted["platform_id"],
+                "match_code": formatted["match_code"],
+                "match_date": formatted["match_date"],
+                "match_key": formatted["match_key"],
+                "match_identity": formatted["match_identity"],
+                "identity_quality": formatted["identity_quality"],
+                "home": formatted["home"],
+                "away": formatted["away"],
+                "match_name": formatted["match_name"],
+                "league": formatted["league"],
+                "option_counts": defaultdict(int),
+                "option_odds": {},
+            }
+        group = match_groups[key]
+        group["option_counts"][option] += 1
+        odds = option_odds(row, option)
+        if odds and option not in group["option_odds"]:
+            group["option_odds"][option] = odds
 
     matches = []
 
@@ -1648,13 +1846,6 @@ def aggregate_heatmap(ctx, play_type):
                     )
                     if total_items
                     else 0.0,
-                    "platforms": {
-                        str(pid): group["platform_counts"][pid].get(
-                            option,
-                            0
-                        )
-                        for pid in (1, 3, 2, 4)
-                    },
                 }
             )
 
@@ -1705,41 +1896,10 @@ def aggregate_heatmap(ctx, play_type):
             }
         )
 
-    platform_summary = []
-
-    for platform_id in (1, 3, 2, 4):
-        option_rows = [
-            {
-                "option": option,
-                "count": count,
-            }
-            for (pid, option), count
-            in platform_total.items()
-            if pid == platform_id
-        ]
-
-        option_rows.sort(
-            key=lambda item: item["count"],
-            reverse=True
-        )
-
-        platform_summary.append(
-            {
-                "platform_id": platform_id,
-                "platform_name": PLATFORMS[platform_id],
-                "total_items": sum(
-                    item["count"]
-                    for item in option_rows
-                ),
-                "options": option_rows,
-            }
-        )
-
     return {
         "play_type": play_type,
         "focus": focus,
         "matches": matches,
-        "platform_summary": platform_summary,
     }
 
 
@@ -2012,7 +2172,7 @@ def results(
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
         alias_map = load_aliases(cursor)
-        hongrui_references = load_hongrui_match_references(
+        match_references = load_caizhanyun_match_references(
             cursor,
             alias_map,
         )
@@ -2097,7 +2257,7 @@ def results(
                 row,
                 alias_map,
                 platform_id,
-                hongrui_references,
+                match_references,
             )
 
             rows.append(
@@ -2187,7 +2347,7 @@ def order_detail(order_id: int):
         )
 
         alias_map = load_aliases(cursor)
-        hongrui_references = load_hongrui_match_references(
+        match_references = load_caizhanyun_match_references(
             cursor,
             alias_map,
         )
@@ -2198,7 +2358,7 @@ def order_detail(order_id: int):
             grouped.get(order_id, []),
             alias_map,
             profiles,
-            hongrui_references=hongrui_references,
+            match_references=match_references,
         )
 
         return {

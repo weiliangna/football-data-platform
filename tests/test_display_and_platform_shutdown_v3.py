@@ -24,23 +24,28 @@ class BettingDisplayTests(unittest.TestCase):
         }
         self.assertEqual(selection_odds(row), "1.85 / 3.2")
 
-    def test_hongrui_reference_controls_public_match_display(self):
+    def test_caizhanyun_reference_controls_public_match_display(self):
         row = {
             "match_name": "曼联:阿森纳",
             "match_code": "source-100",
+            "match_date": "2026-08-27",
             "selection": "主胜",
         }
         references = {
-            ("曼联", "阿森纳"): {
-                "match_code": "周三008",
-                "home": "曼联",
-                "away": "阿森纳",
-                "match_name": "曼联 VS 阿森纳",
-                "canonical_display_key": "曼联|阿森纳",
-            }
+            "by_date": {
+                "2026-08-27": [{
+                    "match_code": "008",
+                    "home": "曼联",
+                    "away": "阿森纳",
+                    "match_name": "曼联 VS 阿森纳",
+                    "event_day": "2026-08-27",
+                    "canonical_display_key": "2026-08-27|曼联|阿森纳",
+                }]
+            },
+            "all": [],
         }
         result = format_match_row(row, {}, 2, references)
-        self.assertEqual(result["match_code"], "周三008")
+        self.assertEqual(result["match_code"], "008")
         self.assertEqual(result["match_name"], "曼联 VS 阿森纳")
 
     def test_zhouyunbao_pass_codes_follow_caizhanyun_wording(self):
@@ -82,17 +87,14 @@ class RequestedUiTests(unittest.TestCase):
         self.assertNotIn("刷新热力图", source)
         self.assertNotIn("rgba(217,255,53", source)
 
-    def test_results_have_calendar_exports_and_guarded_clear(self):
+    def test_results_have_compact_calendar_without_destructive_tools(self):
         source = (
             ROOT / "frontend" / "src" / "views" / "Results.vue"
         ).read_text(encoding="utf-8")
-        for marker in (
-            "calendarCells",
-            "保存图片",
-            "保存 Excel",
-            "DELETE_RESULTS_",
-        ):
+        for marker in ("calendarCells", "返回方案大厅", "前一日", "后一日"):
             self.assertIn(marker, source)
+        for marker in ("刷新赛果", "保存图片", "保存 Excel", "一键清空", "DELETE_RESULTS_"):
+            self.assertNotIn(marker, source)
 
 
 if __name__ == "__main__":

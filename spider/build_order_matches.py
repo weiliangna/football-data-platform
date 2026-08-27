@@ -157,6 +157,11 @@ def build_structured_legs(decoded_items, alias_map=None):
             allow_legacy_fallback=False,
         )
         day = str(item.get("day") or "").strip()
+        team_id = str(
+            item.get("team_id")
+            or item.get("teamId")
+            or ""
+        ).strip()
         match_id = str(
             item.get("match_id")
             or item.get("matchId")
@@ -173,7 +178,7 @@ def build_structured_legs(decoded_items, alias_map=None):
         legs.append(
             {
                 "platform_id": PLATFORM_ID,
-                "match_code": match_id,
+                "match_code": team_id or match_id,
                 "match_name": match_name,
                 "match_key": identity["match_key"],
                 "match_date": identity["match_date"],
@@ -200,11 +205,7 @@ def build_structured_legs(decoded_items, alias_map=None):
                 "used_legacy_fallback": False,
                 "deadline_time": None,
                 "day": day,
-                "team_id": str(
-                    item.get("team_id")
-                    or item.get("teamId")
-                    or ""
-                ).strip(),
+                "team_id": team_id,
                 "week": str(
                     item.get("week")
                     or ""

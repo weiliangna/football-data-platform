@@ -271,13 +271,16 @@ class CaizhanyunLegTests(unittest.TestCase):
                 allow_legacy_fallback=False,
             )
 
-    def test_match_code_uses_match_id_not_team_id(self):
+    def test_display_match_code_uses_team_id_and_identity_keeps_match_id(self):
         _, decoded = decoded_caizhanyun_fixture()
         legs = build_structured_legs(decoded)
 
-        self.assertEqual(legs[0]["match_code"], "2041053")
-        self.assertNotEqual(legs[0]["match_code"], "005")
+        self.assertEqual(legs[0]["match_code"], "005")
         self.assertEqual(legs[0]["team_id"], "005")
+        self.assertEqual(
+            legs[0]["match_identity"],
+            "1|2026-08-25|2041053",
+        )
 
     def test_day_and_identity_candidate_are_retained(self):
         _, decoded = decoded_caizhanyun_fixture()
