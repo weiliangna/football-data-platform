@@ -135,7 +135,7 @@ const trendPoints=computed(()=>{const rows=data.value.trend||[];if(!rows.length)
 const trendPath=computed(()=>trendPoints.value.map((p,i)=>`${i?'L':'M'} ${p.x} ${p.y}`).join(' '))
 const trendArea=computed(()=>{const points=trendPoints.value;if(!points.length)return'';return `${trendPath.value} L ${points[points.length-1].x} 145 L ${points[0].x} 145 Z`})
 
-async function load(){const r=await axios.get(`/api/hub/platform/${platformId.value}`);if(r.data?.code===200)data.value=r.data.data||{}}
+async function load(){const r=await axios.get(`/api/hub/platform/${platformId.value}`,{timeout:25000});if(r.data?.code===200)data.value=r.data.data||{}}
 function topByMarket(market){return (data.value.hot_plays||[]).filter(x=>x.play_type===market).slice(0,3)}
 function money(v){return Number(v||0).toLocaleString('zh-CN',{maximumFractionDigits:2})}
 function number(v){return Math.round(Number(v||0)).toLocaleString('zh-CN')}
@@ -145,7 +145,7 @@ function statusClass(v){return v==='赢'?'status-win':v==='输'?'status-loss':'s
 function goAnalysis(){router.push({path:'/analysis',query:{platform:String(platformId.value)}})}
 function adminToken(){let token=localStorage.getItem('football-admin-token-v1')||'';if(!token){token=window.prompt('此操作需要后台管理 Token，请输入：')||'';if(token)localStorage.setItem('football-admin-token-v1',token)}return token}
 async function toggleCollection(){const token=adminToken();if(!token)return;try{await axios.put(`/api/hub/platform/${platformId.value}/collection`,null,{params:{enabled:!collection.value.spider_enabled},headers:{'X-Admin-Token':token}});await load()}catch(e){alert(e.response?.data?.detail||e.response?.data?.msg||e.message)}}
-async function exportJson(){const r=await axios.get(`/api/hub/platform/${platformId.value}/export`);downloadJson(r.data,stamp(`${platformName.value}-数据导出`)+'.json')}
+async function exportJson(){const r=await axios.get(`/api/hub/platform/${platformId.value}/export`,{timeout:25000});downloadJson(r.data,stamp(`${platformName.value}-数据导出`)+'.json')}
 function chooseImport(){fileInput.value?.click()}
 async function importJson(ev){const file=ev.target.files?.[0];ev.target.value='';if(!file)return;const token=adminToken();if(!token)return;try{const parsed=JSON.parse(await file.text());const records=parsed.records||parsed.data||parsed;if(!Array.isArray(records))throw new Error('JSON 中未找到 records 数组');const r=await axios.post(`/api/hub/platform/${platformId.value}/import`,{records},{headers:{'X-Admin-Token':token}});alert(`导入完成：${r.data.imported||0} 条`);await load()}catch(e){alert(e.response?.data?.detail||e.response?.data?.msg||e.message)}}
 async function clearRecords(){if(!confirm(`确定清空 ${platformName.value} 的订单记录吗？此操作会删除数据库中的该平台订单与拆单。`))return;const token=adminToken();if(!token)return;try{const r=await axios.delete(`/api/hub/platform/${platformId.value}/records`,{headers:{'X-Admin-Token':token}});alert(`已清空 ${r.data.deleted||0} 条记录`);await load()}catch(e){alert(e.response?.data?.detail||e.response?.data?.msg||e.message)}}

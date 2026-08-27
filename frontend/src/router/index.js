@@ -6,11 +6,12 @@ import Home from "../views/Home.vue"
 import OrderDetail from "../views/OrderDetail.vue"
 import Orders from "../views/Orders.vue"
 import Results from "../views/Results.vue"
-import ScpaiMatchDetail from "../views/ScpaiMatchDetail.vue"
-import ScpaiMatches from "../views/ScpaiMatches.vue"
-import ScpaiNews from "../views/ScpaiNews.vue"
 import UserCenter from "../views/UserCenter.vue"
 import UserDetail from "../views/UserDetail.vue"
+
+
+const ScpaiMatches = () => import("../views/ScpaiMatches.vue")
+const ScpaiNews = () => import("../views/ScpaiNews.vue")
 
 
 const routes = [
@@ -18,7 +19,10 @@ const routes = [
   { path: "/orders", component: Orders },
   { path: "/analysis", component: Analysis },
   { path: "/match-data", component: ScpaiMatches },
-  { path: "/match-data/:externalId", component: ScpaiMatchDetail },
+  {
+    path: "/match-data/:externalId",
+    redirect: route => ({ path: "/match-data", query: { match: route.params.externalId } }),
+  },
   { path: "/match-news", component: ScpaiNews },
   { path: "/heatmap", component: Heatmap },
   { path: "/results", component: Results },

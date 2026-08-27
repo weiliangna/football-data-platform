@@ -141,6 +141,7 @@ const data = ref({})
 const selectedKey = ref("")
 const loading = ref(true)
 const error = ref("")
+let requestInFlight = false
 const now = ref(new Date())
 let timer
 
@@ -165,10 +166,12 @@ const currentDate = computed(() => now.value.toLocaleDateString("zh-CN", { month
 const currentTime = computed(() => now.value.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" }))
 
 async function load() {
+  if (requestInFlight) return
+  requestInFlight = true
   loading.value = true
   error.value = ""
   try {
-    const response = await axios.get("/api/portal/dashboard")
+    const response = await axios.get("/api/portal/dashboard", { timeout: 25000 })
     if (!response.data || response.data.code !== 200) throw new Error()
     data.value = response.data.data || {}
     const first = (data.value.sender_ranking || [])[0]
@@ -178,6 +181,7 @@ async function load() {
     error.value = "实时数据暂时无法读取，请稍后重试或检查接口连接状态"
   } finally {
     loading.value = false
+    requestInFlight = false
   }
 }
 

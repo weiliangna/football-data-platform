@@ -20,7 +20,7 @@
 import { computed,onMounted,ref } from "vue";import axios from "axios";import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue";import EmptyState from "../components/ui/EmptyState.vue";import ErrorState from "../components/ui/ErrorState.vue"
 const plays=["胜平负","让球胜平负","半全场","比分"],selectedPlay=ref(""),data=ref({}),loading=ref(true),error=ref("")
 const visiblePlays=computed(()=>selectedPlay.value?[selectedPlay.value]:plays),playCount=computed(()=>{const set=new Set();(data.value.matches||[]).forEach(m=>Object.keys(m.plays||{}).forEach(p=>{if((m.plays[p]||[]).length)set.add(p)}));return set.size})
-async function load(){loading.value=true;error.value="";try{const r=await axios.get("/api/portal/analysis");if(!r.data||r.data.code!==200)throw new Error();data.value=r.data.data||{}}catch{data.value={};error.value="赛事分析暂时无法读取，请稍后重试或检查接口连接状态"}finally{loading.value=false}}
+async function load(){loading.value=true;error.value="";try{const r=await axios.get("/api/portal/analysis",{timeout:25000});if(!r.data||r.data.code!==200)throw new Error();data.value=r.data.data||{}}catch{data.value={};error.value="赛事分析暂时无法读取，请稍后重试或检查接口连接状态"}finally{loading.value=false}}
 function number(v){return Math.round(Number(v||0)).toLocaleString("zh-CN")} function isPeak(rows,item){return Number(item.share||0)===Math.max(...rows.map(r=>Number(r.share||0)))} onMounted(load)
 </script>
 <style scoped>

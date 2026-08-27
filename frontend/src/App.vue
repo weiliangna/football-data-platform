@@ -26,7 +26,7 @@ const platformError = ref(false)
 async function loadPlatforms() {
   platformError.value = false
   try {
-    const response = await axios.get("/api/platform/list")
+    const response = await axios.get("/api/platform/list", { timeout: 25000 })
     const rows = response.data && response.data.data
     platforms.value = Array.isArray(rows) ? rows : []
   } catch {

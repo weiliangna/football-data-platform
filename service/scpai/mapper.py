@@ -22,30 +22,13 @@ def normalize_match(raw):
     source = _object(raw)
     external_id = str(source.get("id") or "")
     fields = (
-        "code",
-        "competition",
-        "kickoff",
-        "kickoffAt",
-        "home",
-        "away",
-        "homeRank",
-        "awayRank",
-        "direction",
-        "consensusCount",
-        "marketCount",
-        "strength",
-        "status",
-        "classification",
-        "explanation",
+        "code", "competition", "kickoff", "kickoffAt", "home", "away",
+        "homeRank", "awayRank", "direction", "consensusCount", "consensus",
+        "marketCount", "totalMarkets", "strength", "status", "classification",
+        "explanation", "match", "sampleCount", "latestAt", "ageMinutes",
     )
     match = {key: deepcopy(source.get(key)) for key in fields}
-    match.update(
-        {
-            "id": external_id,
-            "externalSource": "scpai",
-            "externalId": external_id,
-        }
-    )
+    match.update({"id": external_id, "externalSource": "scpai", "externalId": external_id})
     return match
 
 
@@ -54,33 +37,19 @@ def normalize_market_series(raw):
     raw_id = str(source.get("id") or "")
     raw_name = str(source.get("name") or "")
     fields = (
-        "selection",
-        "rawSelection",
-        "line",
-        "delta",
-        "color",
-        "values",
-        "labels",
-        "openingProbability",
-        "currentProbability",
-        "openingOdd",
-        "currentOdd",
-        "openingAt",
-        "currentAt",
-        "directionKey",
-        "directionLabel",
-        "synchronized",
+        "selection", "rawSelection", "line", "delta", "color", "values",
+        "labels", "openingProbability", "currentProbability", "openingOdd",
+        "currentOdd", "openingAt", "currentAt", "directionKey",
+        "directionLabel", "synchronized", "explanation",
     )
     series = {key: deepcopy(source.get(key)) for key in fields}
-    series.update(
-        {
-            "id": raw_id,
-            "name": raw_name,
-            "type": MARKET_TYPE_MAP.get(raw_id, "UNKNOWN"),
-            "rawMarketId": raw_id,
-            "rawMarketName": raw_name,
-        }
-    )
+    series.update({
+        "id": raw_id,
+        "name": raw_name,
+        "type": MARKET_TYPE_MAP.get(raw_id, "UNKNOWN"),
+        "rawMarketId": raw_id,
+        "rawMarketName": raw_name,
+    })
     series["values"] = _list(series.get("values"))
     series["labels"] = _list(series.get("labels"))
     return series
@@ -88,28 +57,29 @@ def normalize_market_series(raw):
 
 def map_dashboard(raw):
     source = _object(raw)
+    selected = source.get("selectedMatch")
     return {
         "matches": [normalize_match(item) for item in _list(source.get("queue"))],
-        "match": normalize_match(source.get("selectedMatch"))
-        if isinstance(source.get("selectedMatch"), dict)
-        else None,
-        "markets": [
-            normalize_market_series(item) for item in _list(source.get("series"))
-        ],
+        "match": normalize_match(selected) if isinstance(selected, dict) else None,
+        "markets": [normalize_market_series(item) for item in _list(source.get("series"))],
         "favoriteIndex": deepcopy(source.get("favoriteIndex")),
+        "alerts": deepcopy(_list(source.get("alerts"))),
         "summary": deepcopy(_object(source.get("summary"))),
         "provider": deepcopy(_object(source.get("provider"))),
+        "rules": deepcopy(source.get("rules")),
+        "labels": deepcopy(_list(source.get("labels"))),
         "updatedAt": source.get("updatedAt") or source.get("checkedAt") or "",
+        "checkedAt": source.get("checkedAt") or "",
         "refreshSeconds": source.get("refreshSeconds"),
+        "demoMode": bool(source.get("demoMode")),
     }
 
 
 def map_context(raw):
     source = _object(raw)
+    match = source.get("match")
     return {
-        "match": normalize_match(source.get("match"))
-        if isinstance(source.get("match"), dict)
-        else None,
+        "match": normalize_match(match) if isinstance(match, dict) else None,
         "motivation": deepcopy(_object(source.get("motivation"))),
         "home": deepcopy(_object(source.get("home"))),
         "away": deepcopy(_object(source.get("away"))),
@@ -127,18 +97,15 @@ def map_context(raw):
 
 def map_news(raw):
     source = _object(raw)
+    match = source.get("match")
     items = [deepcopy(item) for item in _list(source.get("items")) if isinstance(item, dict)]
     return {
-        "match": normalize_match(source.get("match"))
-        if isinstance(source.get("match"), dict)
-        else None,
+        "match": normalize_match(match) if isinstance(match, dict) else None,
         "generatedAt": source.get("generatedAt") or "",
         "expiresAt": source.get("expiresAt") or "",
         "stale": bool(source.get("stale")),
         "items": items,
         "counts": deepcopy(_object(source.get("counts"))),
         "analysis": deepcopy(source.get("analysis")),
-        "categories": sorted(
-            {str(item.get("category")) for item in items if item.get("category")}
-        ),
+        "categories": sorted({str(item.get("category")) for item in items if item.get("category")}),
     }

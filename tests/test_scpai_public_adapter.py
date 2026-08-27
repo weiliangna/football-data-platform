@@ -167,7 +167,7 @@ class ScpaiPublicAdapterTests(unittest.TestCase):
         self.assertTrue(all(result["matches"] for result in results))
         self.assertEqual(len(session.calls), 1)
 
-    def test_detail_combines_dashboard_and_context(self):
+    def test_detail_and_context_are_independent(self):
         adapter, _session = self.make_adapter(
             {
                 "/api/dashboard": [FakeResponse(200, dashboard_payload()), FakeResponse(200, dashboard_payload(selected=True))],
@@ -177,7 +177,9 @@ class ScpaiPublicAdapterTests(unittest.TestCase):
         result = adapter.get_match_detail(MATCH_ID)
         self.assertEqual(result["match"]["externalId"], MATCH_ID)
         self.assertEqual(result["markets"][0]["type"], "WIN_DRAW_LOSS")
-        self.assertEqual(result["context"]["absences"], [])
+        self.assertNotIn("context", result)
+        context = adapter.get_match_context(MATCH_ID)
+        self.assertEqual(context["absences"], [])
 
     def test_match_id_must_come_from_dashboard_queue(self):
         adapter, _session = self.make_adapter(
@@ -199,6 +201,74 @@ class ScpaiPublicAdapterTests(unittest.TestCase):
         self.assertIn("水位看板", sidebar)
         self.assertIn("比赛新闻", sidebar)
         self.assertIn('rel="noopener noreferrer"', news_page)
+
+    def test_scpai_routes_are_lazy_and_do_not_change_global_axios(self):
+        with open("frontend/src/router/index.js", encoding="utf-8") as handle:
+            router = handle.read()
+        with open("frontend/src/views/ScpaiMatches.vue", encoding="utf-8") as handle:
+            dashboard = handle.read()
+        with open("frontend/src/views/ScpaiNews.vue", encoding="utf-8") as handle:
+            news = handle.read()
+        self.assertIn('() => import("../views/ScpaiMatches.vue")', router)
+        self.assertNotIn('import * as echarts', dashboard)
+        self.assertNotIn("axios.defaults", router + dashboard + news)
+        self.assertNotIn("https://scpai.top", dashboard + news)
+
+    def test_scpai_pages_refresh_locally_every_30_seconds(self):
+        for path in (
+            "frontend/src/views/ScpaiMatches.vue",
+            "frontend/src/views/ScpaiNews.vue",
+        ):
+            with self.subTest(path=path), open(path, encoding="utf-8") as handle:
+                source = handle.read()
+                self.assertIn("REFRESH_MS=30000", source)
+                self.assertIn("setInterval", source)
+                self.assertIn("clearInterval", source)
+
+    def test_backend_uses_a_dedicated_bounded_executor(self):
+        with open("api/scpai.py", encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("ThreadPoolExecutor(max_workers=4", source)
+        self.assertIn("run_in_executor(_scpai_executor", source)
+        self.assertIn("async def list_matches", source)
+
+    def test_public_dashboard_information_hierarchy_is_preserved(self):
+        with open("frontend/src/views/ScpaiMatches.vue", encoding="utf-8") as handle:
+            source = handle.read()
+        for contract in (
+            "scpai-report-head",
+            "scpai-summary-grid",
+            "scpai-focus-grid",
+            "scpai-workspace-grid",
+            "scpai-match-panel",
+            "scpai-detail-panel",
+            "scpai-market-grid",
+            "scpai-priority-panel",
+        ):
+            self.assertIn(contract, source)
+        self.assertIn("loadContext", source)
+        self.assertNotIn("loadNews", source)
+
+    def test_contact_and_provider_brand_are_not_rendered(self):
+        for path in (
+            "frontend/src/views/ScpaiMatches.vue",
+            "frontend/src/views/ScpaiNews.vue",
+        ):
+            with self.subTest(path=path), open(path, encoding="utf-8") as handle:
+                template = handle.read().split("<script", 1)[0]
+                self.assertNotIn("联系方式", template)
+                self.assertNotIn("数据来源", template)
+                self.assertNotIn("scpai.top", template.lower())
+
+    def test_existing_auto_refresh_pages_do_not_overlap_requests(self):
+        for path in (
+            "frontend/src/views/Home.vue",
+            "frontend/src/views/Heatmap.vue",
+        ):
+            with self.subTest(path=path), open(path, encoding="utf-8") as handle:
+                source = handle.read()
+                self.assertIn("requestInFlight", source)
+                self.assertIn("timeout: 25000", source)
 
 
 if __name__ == "__main__":

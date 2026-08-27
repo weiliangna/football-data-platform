@@ -118,7 +118,7 @@ const platformColors = {
 
 async function loadPlatforms() {
   try {
-    const response = await axios.get("/api/platform/list")
+    const response = await axios.get("/api/platform/list", { timeout: 25000 })
     platforms.value = Array.isArray(response.data?.data) ? response.data.data : []
   } catch { platforms.value = [] }
 }
@@ -129,7 +129,7 @@ async function load() {
   const params = { page: page.value, page_size: 30, keyword: keyword.value, result: result.value }
   if (platform.value) params.platform_id = Number(platform.value)
   try {
-    const response = await axios.get("/api/portal/schemes", { params })
+    const response = await axios.get("/api/portal/schemes", { params, timeout: 25000 })
     if (!response.data || response.data.code !== 200) throw new Error()
     orders.value = response.data.data || []
     page.value = response.data.page || 1
@@ -155,7 +155,7 @@ async function reloadUser() {
   userLoading.value = true
   userError.value = ""
   try {
-    const response = await axios.get(`/api/portal/user/${activeUser.value.platform_id}/${activeUser.value.user_id}`)
+    const response = await axios.get(`/api/portal/user/${activeUser.value.platform_id}/${activeUser.value.user_id}`, { timeout: 25000 })
     if (!response.data || response.data.code !== 200) throw new Error()
     userDetail.value = response.data.data || {}
   } catch {

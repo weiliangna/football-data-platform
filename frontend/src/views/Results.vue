@@ -75,7 +75,7 @@ async function load() {
   try {
     const params = { day: selectedDay.value, keyword: keyword.value, status: status.value, page: page.value, page_size: pageSize }
     if (month.value) params.month = month.value
-    const response = await axios.get("/api/hub/results", { params })
+    const response = await axios.get("/api/hub/results", { params, timeout: 25000 })
     if (response.data?.code !== 200) throw new Error()
     const data = response.data.data || {}; rows.value = data.rows || []; summary.value = data.summary || {}; dateCounts.value = data.date_counts || []; pages.value = data.pages || 1; total.value = data.total || 0; month.value = data.month || month.value || currentMonth()
   } catch { rows.value = []; error.value = "赛果数据暂时无法读取，请稍后重试或检查接口连接状态" } finally { loading.value = false }

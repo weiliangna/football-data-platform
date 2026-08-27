@@ -56,6 +56,7 @@ const data = ref({})
 const loading = ref(true)
 const error = ref("")
 let refreshTimer
+let requestInFlight = false
 
 const matches = computed(() => data.value.matches || [])
 const displayedMatches = computed(() => selectedMatch.value ? matches.value.filter((item) => matchKey(item) === selectedMatch.value) : matches.value)
@@ -63,17 +64,19 @@ const focus = computed(() => displayedMatches.value.slice(0, 4).map((item) => ({
 const optionNames = computed(() => [...new Set(displayedMatches.value.flatMap((item) => (item.options || []).map((option) => option.option)))])
 
 async function load() {
+  if (requestInFlight) return
+  requestInFlight = true
   loading.value = true
   error.value = ""
   try {
-    const response = await axios.get("/api/portal/heatmap", { params: { play_type: playType.value } })
+    const response = await axios.get("/api/portal/heatmap", { params: { play_type: playType.value }, timeout: 25000 })
     if (response.data?.code !== 200) throw new Error()
     data.value = response.data.data || {}
     if (selectedMatch.value && !matches.value.some((item) => matchKey(item) === selectedMatch.value)) selectedMatch.value = ""
   } catch {
     data.value = {}
     error.value = "热力数据暂时无法读取，请稍后重试"
-  } finally { loading.value = false }
+  } finally { loading.value = false; requestInFlight = false }
 }
 
 function changePlay(play) { playType.value = play; selectedMatch.value = "" }
