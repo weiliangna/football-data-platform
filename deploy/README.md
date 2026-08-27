@@ -46,6 +46,18 @@ The platform files use these variables:
 - `config/qishilu.env`: `QISHILU_AUTHORIZATION`.
 - `config/yuncai.env`: reserved for the verified authorization fields. Live sampling remains blocked until the dynamic query/body signing algorithm is available.
 
+The public match-data adapter reads these non-secret values from `config/app.env`:
+
+- `SCPAI_BASE_URL=https://scpai.top`
+- `SCPAI_ENABLED=true`
+- `SCPAI_DASHBOARD_CACHE_SECONDS=15`
+- `SCPAI_CONTEXT_CACHE_SECONDS=300`
+- `SCPAI_NEWS_CACHE_SECONDS=300`
+- `SCPAI_CONNECT_TIMEOUT=5`
+- `SCPAI_REQUEST_TIMEOUT=10`
+
+Only the public `dashboard`, `context`, and `news` GET endpoints are allowlisted. No cookie, token, authorization header, database migration, or persistent cache table is required.
+
 ## 3. Unified platform scheduling
 
 All platform ingestion is launched by one timer:
