@@ -1,7 +1,10 @@
+import asyncio
 import json
 import re
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from time import monotonic
 
 import pymysql
 from fastapi import APIRouter
@@ -41,6 +44,19 @@ PLATFORMS = {
 }
 
 FOUR_PLAYS = STANDARD_PLAYS
+
+DASHBOARD_CACHE_SECONDS = 15.0
+DASHBOARD_STALE_SECONDS = 120.0
+DASHBOARD_FIRST_RESPONSE_TIMEOUT = 12.0
+_dashboard_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="portal-dashboard",
+)
+_dashboard_cache = {
+    "data": None,
+    "created_at": 0.0,
+}
+_dashboard_refresh_task = None
 
 
 def money(value):
@@ -787,6 +803,84 @@ def load_order_matches(cursor, order_ids):
 
     return grouped
 
+
+def load_hot_play_matches(cursor, order_ids):
+    """Load betting legs without the expensive match-results correlation.
+
+    The live hot-play calculation only reads match identity, play, selection,
+    odds and deadline fields. Joining match_results here added no business
+    value and made every dashboard refresh scan the settlement table once per
+    leg. Keep the full loader for pages that actually display settled scores.
+    """
+    grouped = defaultdict(list)
+    if not order_ids:
+        return grouped
+
+    columns = table_columns(cursor, "order_matches")
+    identity_v2 = supports_identity_v2(columns)
+    if identity_v2:
+        identity_fields = """
+            om.platform_id,
+            om.match_date,
+            om.match_key,
+            om.normalized_home,
+            om.normalized_away,
+            om.match_identity,
+            om.identity_quality,
+        """
+    else:
+        identity_fields = """
+            o.platform_id,
+            NULL AS match_date,
+            om.match_key,
+            NULL AS normalized_home,
+            NULL AS normalized_away,
+            NULL AS match_identity,
+            'legacy' AS identity_quality,
+        """
+
+    chunk_size = 1000
+    for offset in range(0, len(order_ids), chunk_size):
+        chunk = order_ids[offset:offset + chunk_size]
+        placeholders = ",".join(["%s" for _ in chunk])
+        cursor.execute(
+            f"""
+            SELECT
+                om.id,
+                om.order_id,
+                DATE(
+                    DATE_SUB(
+                        COALESCE(o.publish_time,o.created_time),
+                        INTERVAL 6 HOUR
+                    )
+                ) AS order_event_day,
+                {identity_fields}
+                om.match_code,
+                om.match_name,
+                om.league,
+                om.play_type,
+                om.selection,
+                om.option_detail,
+                om.handicap,
+                om.deadline_time,
+                om.result AS bet_result,
+                NULL AS home_score,
+                NULL AS away_score,
+                NULL AS half_home_score,
+                NULL AS half_away_score,
+                NULL AS match_status
+            FROM order_matches om
+            INNER JOIN orders o ON o.id=om.order_id
+            WHERE om.order_id IN ({placeholders})
+            ORDER BY om.order_id DESC,om.id ASC
+            """,
+            tuple(chunk),
+        )
+        for row in cursor.fetchall():
+            grouped[intv(row.get("order_id"))].append(row)
+
+    return grouped
+
 def match_deadline(
     match_row,
     schedule_by_code,
@@ -1226,7 +1320,7 @@ def build_current_context(cursor):
                 deadline_summary[source] += 1
 
     pending_orders = load_pending_orders(cursor)
-    pending_grouped = load_order_matches(
+    pending_grouped = load_hot_play_matches(
         cursor,
         [intv(order.get("id")) for order in pending_orders],
     )
@@ -1340,8 +1434,7 @@ def aggregate_today_hot_plays(ctx):
     return result
 
 
-@router.get("/dashboard")
-def dashboard():
+def build_dashboard_response():
     conn = None
     cursor = None
 
@@ -1357,6 +1450,7 @@ def dashboard():
         profiles = ctx["profiles"]
         unexpired = ctx["unexpired"]
         hot_plays = aggregate_today_hot_plays(ctx)
+        statistics = load_user_statistics(cursor)
 
         yesterday = target_day - timedelta(days=1)
 
@@ -1468,22 +1562,13 @@ def dashboard():
                     matches,
                     alias_map,
                     profiles,
+                    statistics=statistics,
                     match_references=match_references,
                 )
             )
 
         for key, group in user_groups.items():
-            cursor.execute(
-                """
-                SELECT total_orders,win_orders,lose_orders,hit_rate
-                FROM user_statistics
-                WHERE platform_id=%s AND user_id=%s
-                LIMIT 1
-                """,
-                key
-            )
-
-            stat = cursor.fetchone() or {}
+            stat = statistics.get(key, {})
             wins = intv(stat.get("win_orders"))
             losses = intv(stat.get("lose_orders"))
             total = intv(stat.get("total_orders"))
@@ -1540,6 +1625,57 @@ def dashboard():
             cursor.close()
         if conn:
             conn.close()
+
+
+async def refresh_dashboard_cache():
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            _dashboard_executor,
+            build_dashboard_response,
+        )
+    except Exception as exc:
+        result = {
+            "code": 500,
+            "msg": str(exc),
+            "data": {},
+        }
+
+    if result.get("code") == 200:
+        _dashboard_cache["data"] = result
+        _dashboard_cache["created_at"] = monotonic()
+    return result
+
+
+@router.get("/dashboard")
+async def dashboard():
+    global _dashboard_refresh_task
+
+    now = monotonic()
+    cached = _dashboard_cache.get("data")
+    cache_age = now - float(_dashboard_cache.get("created_at") or 0.0)
+    if cached is not None and cache_age <= DASHBOARD_CACHE_SECONDS:
+        return cached
+
+    if _dashboard_refresh_task is None or _dashboard_refresh_task.done():
+        _dashboard_refresh_task = asyncio.create_task(
+            refresh_dashboard_cache()
+        )
+
+    if cached is not None and cache_age <= DASHBOARD_STALE_SECONDS:
+        return cached
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(_dashboard_refresh_task),
+            timeout=DASHBOARD_FIRST_RESPONSE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "code": 503,
+            "msg": "首页数据正在生成，请稍后重试",
+            "data": {},
+        }
 
 
 @router.get("/schemes")
