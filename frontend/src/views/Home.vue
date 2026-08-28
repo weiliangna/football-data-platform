@@ -133,6 +133,7 @@ import axios from "axios"
 import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue"
 import EmptyState from "../components/ui/EmptyState.vue"
 import ErrorState from "../components/ui/ErrorState.vue"
+import { readCached, writeCached } from "../utils/cache.js"
 
 const router = useRouter()
 const data = ref({})
@@ -181,9 +182,9 @@ async function load() {
       const first = nextRanking[0]
       selectedKey.value = first ? personKey(first) : ""
     }
+    writeCached("dashboard", next)
   } catch {
     if (initialLoad) {
-      data.value = {}
       error.value = "实时数据暂时不可用"
     }
   } finally {
@@ -219,6 +220,11 @@ function handleVisibilityChange() {
   }
 }
 onMounted(() => {
+  const cached = readCached("dashboard")
+  if (cached?.payload && typeof cached.payload === "object") {
+    data.value = cached.payload
+    loading.value = false
+  }
   load()
   document.addEventListener("visibilitychange", handleVisibilityChange)
   scheduleRefresh()

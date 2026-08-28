@@ -113,6 +113,16 @@ The migrations do not contain the base `CREATE TABLE` definition for these curre
 
 Their production definitions are now documented by the reviewed no-data snapshot, but they still cannot be created by running the repository migrations alone.
 
+## Optional Last Known Good snapshots
+
+The API can persist successful read-model responses in an optional `api_snapshots`
+table.  The application treats this table as best-effort and continues using
+its in-process cache when the table has not been provisioned.  A DBA may create
+the table separately with the following fields (no business rows are required):
+
+`snapshot_key` (primary key), `payload_json`, `updated_at`, `source_updated_at`,
+and `status`.
+
 ## Migration differences from production
 
 The static comparison found:

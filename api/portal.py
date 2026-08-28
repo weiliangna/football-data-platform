@@ -33,6 +33,7 @@ from common.platform_registry import (
 from common.user_grading import load_user_grades
 from common.user_labels import build_first_order_profile
 from database.mysql import get_conn
+from common.snapshot_store import attach_meta, load_snapshot, save_snapshot
 
 
 router = APIRouter(
@@ -59,6 +60,10 @@ _dashboard_executor = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="portal-dashboard",
 )
+_snapshot_executor = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="portal-snapshot",
+)
 _dashboard_cache = {
     "data": None,
     "created_at": 0.0,
@@ -71,6 +76,43 @@ _current_context_cache = {
     "has_profiles": False,
 }
 _current_context_lock = Lock()
+
+
+def _empty_dashboard_response(*, freshness="refreshing", refreshing=True,
+                              updated_at=None, age_seconds=None):
+    """Return a renderable dashboard envelope while a snapshot warms."""
+
+    data = {
+        "day": str(datetime.now().date()),
+        "server_time": datetime.now(),
+        "metrics": {
+            "yesterday_plans": 0,
+            "yesterday_wins": 0,
+            "yesterday_lost": 0,
+            "yesterday_settled": 0,
+            "today_plans": 0,
+            "today_followers": 0,
+            "today_amount": 0.0,
+            "unexpired_plans": 0,
+        },
+        "platform_bets": [],
+        "sender_ranking": [],
+        "hot_plays": [
+            {"play_type": play_type, "items": []}
+            for play_type in FOUR_PLAYS
+        ],
+    }
+    response_meta = {
+        "freshness": freshness,
+        "updated_at": updated_at,
+        "age_seconds": age_seconds,
+        "refreshing": bool(refreshing),
+    }
+    return {
+        "code": 200,
+        "data": data,
+        "meta": response_meta,
+    }
 
 
 def money(value):
@@ -1973,8 +2015,29 @@ async def refresh_dashboard_cache():
         }
 
     if result.get("code") == 200:
+        refreshed_at = datetime.now()
+        data = result.get("data") or {}
+        data_with_meta = attach_meta(
+            data,
+            freshness="fresh",
+            updated_at=refreshed_at.isoformat(),
+            age_seconds=0.0,
+            refreshing=False,
+        )
+        result["data"] = data_with_meta
+        result["meta"] = data_with_meta.get("meta")
         _dashboard_cache["data"] = result
         _dashboard_cache["created_at"] = monotonic()
+        # Persistence is best-effort.  If api_snapshots has not been migrated
+        # yet, the in-process cache remains fully functional.
+        # Snapshot persistence must never extend the API response latency.
+        loop.run_in_executor(
+            _snapshot_executor,
+            save_snapshot,
+            "portal:dashboard",
+            data,
+            "fresh",
+        )
     return result
 
 
@@ -1984,6 +2047,32 @@ async def dashboard():
 
     now = monotonic()
     cached = _dashboard_cache.get("data")
+    if cached is None:
+        snapshot, snapshot_meta = load_snapshot("portal:dashboard")
+        if snapshot is not None:
+            cached = {
+                "code": 200,
+                "data": snapshot,
+                "meta": {
+                    **(snapshot_meta or {}),
+                    "freshness": "stale",
+                    "refreshing": True,
+                },
+            }
+            cached["data"] = attach_meta(
+                    snapshot,
+                    freshness="stale",
+                    updated_at=(snapshot_meta or {}).get("updated_at"),
+                    age_seconds=(snapshot_meta or {}).get("age_seconds"),
+                    refreshing=True,
+                )
+            _dashboard_cache["data"] = cached
+            _dashboard_cache["created_at"] = monotonic()
+            # A persisted snapshot is immediately usable; refresh it in the
+            # background instead of blocking the first page request.
+            _dashboard_refresh_task = asyncio.create_task(
+                refresh_dashboard_cache()
+            )
     cache_age = now - float(_dashboard_cache.get("created_at") or 0.0)
     if cached is not None and cache_age <= DASHBOARD_CACHE_SECONDS:
         return cached
@@ -2002,11 +2091,9 @@ async def dashboard():
             timeout=DASHBOARD_FIRST_RESPONSE_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        return {
-            "code": 503,
-            "msg": "首页数据正在生成，请稍后重试",
-            "data": {},
-        }
+        # Keep the response renderable.  The single-flight task continues in
+        # the executor and will replace this envelope once complete.
+        return _empty_dashboard_response()
 
 
 @router.get("/schemes")
