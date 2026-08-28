@@ -179,10 +179,57 @@ def refresh_order_result(cursor, order_id):
         result = "待开奖"
 
     cursor.execute(
-        "UPDATE orders SET result=%s WHERE id=%s",
-        (result, order_id),
+        "UPDATE orders SET result=%s WHERE id=%s AND (result IS NULL OR result<>%s)",
+        (result, order_id, result),
     )
     return result
+
+
+def refresh_order_results_batch(cursor, order_ids):
+    """Recalculate affected orders once and update only changed statuses."""
+
+    ids = sorted({int(value) for value in order_ids if value is not None})
+    if not ids:
+        return {"results": {}, "updated": 0}
+    marks = ",".join(["%s"] * len(ids))
+    cursor.execute(
+        f"""
+        SELECT om.order_id,MAX(o.result) AS old_result,
+               COUNT(*) AS total,
+               SUM(CASE WHEN om.result='赢' THEN 1 ELSE 0 END) AS win_num,
+               SUM(CASE WHEN om.result='输' THEN 1 ELSE 0 END) AS lose_num,
+               SUM(CASE WHEN om.result='待开奖' THEN 1 ELSE 0 END) AS pending_num
+        FROM order_matches om
+        LEFT JOIN orders o ON o.id=om.order_id
+        WHERE om.order_id IN ({marks})
+        GROUP BY om.order_id
+        """,
+        tuple(ids),
+    )
+    updates = []
+    results = {}
+    for stat in cursor.fetchall():
+        total = int(stat.get("total") or 0)
+        win_num = int(stat.get("win_num") or 0)
+        lose_num = int(stat.get("lose_num") or 0)
+        pending_num = int(stat.get("pending_num") or 0)
+        if total <= 0 or pending_num > 0:
+            result = "待开奖"
+        elif lose_num > 0:
+            result = "输"
+        elif win_num == total:
+            result = "赢"
+        else:
+            result = "待开奖"
+        results[result] = results.get(result, 0) + 1
+        if str(stat.get("old_result") or "") != result:
+            updates.append((result, int(stat["order_id"]), result))
+    if updates:
+        cursor.executemany(
+            "UPDATE orders SET result=%s WHERE id=%s AND (result IS NULL OR result<>%s)",
+            updates,
+        )
+    return {"results": results, "updated": len(updates)}
 
 
 def log_settlement(
@@ -482,8 +529,10 @@ def select_order_matches(
                 selection,handicap,result,
                 'legacy_match_name' AS identity_strategy
             FROM order_matches
-            WHERE match_name=%s
+            WHERE result='待开奖'
+              AND (match_name=%s
                OR (%s<>'' AND match_key=%s)
+              )
             """,
             (
                 match_name,
@@ -521,7 +570,8 @@ def select_order_matches(
                 ELSE 'legacy_match_name'
             END AS identity_strategy
         FROM order_matches
-        WHERE
+        WHERE result='待开奖'
+          AND (
             (
                 %s IS NOT NULL
                 AND %s IS NOT NULL
@@ -646,6 +696,8 @@ def settle_match_with_connection(
             "identity_fallback": 0,
             "legacy_match_name": 0,
         }
+        changed_match_updates = []
+        rows_skipped = 0
 
         for row in rows:
             strategy = str(
@@ -698,26 +750,24 @@ def settle_match_with_connection(
                     half_away,
                     f"{strategy}: {reason}",
                 )
+                changed_match_updates.append((new_result, row["id"], new_result))
+                affected_orders.add(row["order_id"])
+            else:
+                rows_skipped += 1
 
-            cursor.execute(
-                "UPDATE order_matches SET result=%s WHERE id=%s",
-                (new_result, row["id"]),
+        if changed_match_updates:
+            cursor.executemany(
+                "UPDATE order_matches SET result=%s WHERE id=%s AND (result IS NULL OR result<>%s)",
+                changed_match_updates,
             )
-            affected_orders.add(row["order_id"])
 
         order_results = {
             "赢": 0,
             "输": 0,
             "待开奖": 0,
         }
-        for order_id in affected_orders:
-            order_result = refresh_order_result(
-                cursor,
-                order_id,
-            )
-            order_results[order_result] = (
-                order_results.get(order_result, 0) + 1
-            )
+        refreshed = refresh_order_results_batch(cursor, affected_orders)
+        order_results.update(refreshed["results"])
 
         return {
             "match_name": match_name,
@@ -734,6 +784,10 @@ def settle_match_with_connection(
             "orders": len(affected_orders),
             "order_results": order_results,
             "match_strategies": strategy_counts,
+            "rows_updated": len(changed_match_updates) + refreshed["updated"],
+            "rows_skipped": rows_skipped,
+            "result_changed": len(changed_match_updates) + refreshed["updated"],
+            "unchanged_skipped": rows_skipped,
         }
     finally:
         cursor.close()

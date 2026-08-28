@@ -233,6 +233,7 @@ def _disabled_status(runtime):
 
 def _run_one(definition, runtime, runner):
     started = time.time()
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     base = {
         "platform_id": int(runtime["platform_id"]),
         "platform_name": definition.name,
@@ -293,6 +294,24 @@ def _run_one(definition, runtime, runner):
         )
     finally:
         base["cost_time"] = round(time.time() - started, 2)
+        summary = locals().get("summary") or {}
+        rows_read = int(summary.get("rows_read") or summary.get("new_count", 0) or 0)
+        rows_updated = int(summary.get("rows_updated") or summary.get("new_count", 0) or 0)
+        rows_skipped = int(summary.get("rows_skipped") or summary.get("duplicate_count", 0) or 0)
+        print(
+            "[job] job_name=%s started_at=%s rows_read=%d rows_updated=%d "
+            "rows_skipped=%d sql_count=%s commit_count=%s duration_ms=%.2f"
+            % (
+                definition.key,
+                started_at,
+                rows_read,
+                rows_updated,
+                rows_skipped,
+                summary.get("sql_count", "unknown"),
+                summary.get("commit_count", "unknown"),
+                base["cost_time"] * 1000,
+            )
+        )
     return base
 
 

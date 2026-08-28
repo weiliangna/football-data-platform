@@ -30,6 +30,7 @@ REQUIRED_ORDER_COLUMNS = {
     "bet_count",
     "lot_multi",
 }
+_orders_columns_cache = None
 
 
 def run_command(title, command):
@@ -58,6 +59,9 @@ def run_command(title, command):
 
 
 def check_columns():
+    global _orders_columns_cache
+    if _orders_columns_cache is not None:
+        return not (REQUIRED_ORDER_COLUMNS - _orders_columns_cache)
     conn = get_conn()
     cursor = conn.cursor(pymysql.cursors.DictCursor)
 
@@ -67,6 +71,7 @@ def check_columns():
             row["Field"]
             for row in cursor.fetchall()
         }
+        _orders_columns_cache = frozenset(existing)
         missing = REQUIRED_ORDER_COLUMNS - existing
 
         if missing:

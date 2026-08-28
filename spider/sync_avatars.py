@@ -12,9 +12,13 @@ AVATAR_CANDIDATES = (
     "avatar_url","avatar","user_pic","head_img","headimg",
     "head_image","photo","pic"
 )
+_schema_cache = {}
 
 
 def table_columns(cursor, table_name):
+    cached = _schema_cache.get(str(table_name))
+    if cached is not None:
+        return set(cached)
     cursor.execute(
         """
         SELECT COLUMN_NAME
@@ -23,7 +27,9 @@ def table_columns(cursor, table_name):
         """,
         (table_name,)
     )
-    return {row["COLUMN_NAME"] for row in cursor.fetchall()}
+    columns = {row["COLUMN_NAME"] for row in cursor.fetchall()}
+    _schema_cache[str(table_name)] = frozenset(columns)
+    return columns
 
 
 def sync_from_table(cursor, table_name):

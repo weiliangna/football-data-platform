@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from threading import Lock
 
 from common.match_utils import (
     build_match_key,
@@ -15,6 +16,16 @@ IDENTITY_V2_COLUMNS = {
     "match_identity",
     "identity_quality",
 }
+
+_schema_cache = {}
+_schema_cache_lock = Lock()
+
+
+def clear_schema_cache():
+    """Clear process-local schema metadata after an explicit migration."""
+
+    with _schema_cache_lock:
+        _schema_cache.clear()
 
 
 def normalize_match_date(value):
@@ -316,6 +327,11 @@ def identity_match_strategy(result_row, order_match_row):
 
 
 def table_columns(cursor, table_name):
+    cache_key = str(table_name)
+    with _schema_cache_lock:
+        cached = _schema_cache.get(cache_key)
+    if cached is not None:
+        return set(cached)
     cursor.execute(
         """
         SELECT COLUMN_NAME
@@ -325,10 +341,13 @@ def table_columns(cursor, table_name):
         """,
         (table_name,),
     )
-    return {
+    columns = {
         row["COLUMN_NAME"]
         for row in cursor.fetchall()
     }
+    with _schema_cache_lock:
+        _schema_cache[cache_key] = frozenset(columns)
+    return columns
 
 
 def supports_identity_v2(columns):

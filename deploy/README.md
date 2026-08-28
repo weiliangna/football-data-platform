@@ -100,7 +100,7 @@ sudo systemctl enable --now football-backup.timer
 Current active schedules:
 
 - `football-pipeline.timer`: 30 seconds after the previous pipeline run becomes inactive.
-- `football-statistics.timer`: every 30 seconds.
+- `football-statistics.timer`: every 5 minutes, with an in-process flock preventing overlap.
 - `football-settlement.timer`: every 60 seconds.
 - `football-daily.timer`: every day at 00:05.
 - `football-backup.timer`: every day at 03:30.

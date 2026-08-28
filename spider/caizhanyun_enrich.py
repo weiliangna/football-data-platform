@@ -40,6 +40,14 @@ from spider.caizhanyun_detail import get_detail
 
 
 PLATFORM_ID = 1
+_orders_columns_cache = None
+REQUIRED_ORDER_COLUMNS = {
+    "selection",
+    "bet_code",
+    "odds_text",
+    "follow_num",
+    "publish_time",
+}
 
 
 # ============================================================
@@ -1214,6 +1222,9 @@ def save_user_avatar(
 # ============================================================
 
 def check_columns(cursor):
+    global _orders_columns_cache
+    if _orders_columns_cache is not None:
+        return REQUIRED_ORDER_COLUMNS - _orders_columns_cache
 
     cursor.execute(
         """
@@ -1230,23 +1241,10 @@ def check_columns(cursor):
         for row in cursor.fetchall()
 
     }
+    _orders_columns_cache = frozenset(columns)
 
 
-    required = {
-
-        "selection",
-        "bet_code",
-        "odds_text",
-        "follow_num",
-        "publish_time"
-
-    }
-
-
-    return (
-        required -
-        columns
-    )
+    return REQUIRED_ORDER_COLUMNS - _orders_columns_cache
 
 
 # ============================================================
