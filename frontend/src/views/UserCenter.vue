@@ -73,6 +73,7 @@ import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue"
 import EmptyState from "../components/ui/EmptyState.vue"
 import ErrorState from "../components/ui/ErrorState.vue"
 import AppPagination from "../components/ui/AppPagination.vue"
+import { readCached, writeCached } from "../utils/cache.js"
 
 const FilterGroup=defineComponent({props:{title:String,items:Array,modelValue:[String,Number]},emits:["update:modelValue","change"],setup(props,{emit}){return()=>h("div",{class:"filter-group"},[h("label",props.title),h("div",props.items.map(item=>h("button",{type:"button",class:{active:String(props.modelValue)===String(item.value)},onClick:()=>{emit("update:modelValue",item.value);emit("change")}},item.label)))])}})
 const platform=ref("")
@@ -96,7 +97,7 @@ const activeFilterCount=computed(()=>Object.entries(filters.value).filter(([key,
 const followedCount=computed(()=>followed.value.size)
 
 async function loadPlatforms(){try{const response=await axios.get("/api/platform/list",{timeout:12000});platforms.value=Array.isArray(response.data?.data)?response.data.data:[]}catch{platforms.value=[]}}
-async function load(){if(requestController)requestController.abort();requestController=new AbortController();const initial=!users.value.length;loading.value=true;error.value="";const params={platform_id:platform.value?Number(platform.value):0,keyword:keyword.value,page:page.value,page_size:pageSize,...filters.value};try{const response=await axios.get("/api/portal/users",{params,signal:requestController.signal,timeout:15000});if(response.data?.code!==200)throw new Error(response.data?.msg||"request failed");users.value=response.data.data||[];page.value=response.data.page||1;pages.value=response.data.pages||1;total.value=response.data.total||0}catch(err){if(err?.code!=="ERR_CANCELED"){if(initial)users.value=[];error.value="用户数据加载失败，页面其他区域仍可继续使用"}}finally{loading.value=false}}
+async function load(){if(requestController)requestController.abort();requestController=new AbortController();const params={platform_id:platform.value?Number(platform.value):0,keyword:keyword.value,page:page.value,page_size:pageSize,...filters.value};const cacheKey=`users:${JSON.stringify(params)}`;const cached=readCached(cacheKey);if(!users.value.length&&cached?.payload){users.value=cached.payload.data||[];page.value=cached.payload.page||1;pages.value=cached.payload.pages||1;total.value=cached.payload.total||0}const initial=!users.value.length;loading.value=initial;error.value="";try{const response=await axios.get("/api/portal/users",{params,signal:requestController.signal,timeout:8000});if(response.data?.code!==200)throw new Error(response.data?.msg||"request failed");users.value=response.data.data||[];page.value=response.data.page||1;pages.value=response.data.pages||1;total.value=response.data.total||0;writeCached(cacheKey,{data:users.value,page:page.value,pages:pages.value,total:total.value})}catch(err){if(err?.code!=="ERR_CANCELED"&&!users.value.length)error.value="用户数据加载失败，页面其他区域仍可继续使用"}finally{loading.value=false}}
 function applyFilters(){page.value=1;load()}
 function changePage(value){page.value=value;load();window.scrollTo({top:0,behavior:"smooth"})}
 watch(keyword,()=>{clearTimeout(searchTimer);searchTimer=setTimeout(applyFilters,450)})

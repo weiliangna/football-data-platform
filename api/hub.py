@@ -1,8 +1,11 @@
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
 import json
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
+from time import monotonic
 
 import pymysql
 from fastapi import APIRouter, Header, HTTPException
@@ -32,6 +35,12 @@ router = APIRouter(
 
 
 PLATFORMS = default_platform_metadata()
+
+_hub_read_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hub-read")
+_hub_results_cache = {}
+_hub_results_tasks = {}
+_HUB_RESULTS_TIMEOUT = 2.5
+_HUB_RESULTS_TTL = 60.0
 
 MARKETS = ["胜平负", "让球胜平负", "半全场", "比分"]
 
@@ -1251,8 +1260,7 @@ def ranking(period:str="day", platform_id:int=0):
         cursor.close(); conn.close()
 
 
-@router.get("/results")
-def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", status:str="", page:int=1, page_size:int=100):
+def _hub_results_uncached(platform_id:int=0, month:str="", day:str="", keyword:str="", status:str="", page:int=1, page_size:int=100):
     conn=get_conn(); cursor=conn.cursor(pymysql.cursors.DictCursor)
     try:
         page=max(1,page); page_size=max(20,min(200,page_size))
@@ -1340,6 +1348,96 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
         return {"code":200,"data":{"month":month,"months":months,"rows":rows,"total":total,"page":page,"pages":math.ceil(total/page_size) if total else 1,"summary":summary,"date_counts":date_counts}}
     finally:
         cursor.close(); conn.close()
+
+
+async def _run_hub_results(key, args):
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        _hub_read_executor,
+        _hub_results_uncached,
+        *args,
+    )
+    if isinstance(result, dict) and result.get("code") == 200:
+        _hub_results_cache[key] = {
+            "payload": result,
+            "created_at": monotonic(),
+        }
+    return result
+
+
+def _consume_hub_task(task):
+    try:
+        task.exception()
+    except BaseException:
+        pass
+
+
+@router.get("/results")
+async def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", status:str="", page:int=1, page_size:int=100):
+    """Serve cached archive data while the SQL query warms.
+
+    The underlying query intentionally retains its parameterized expressions
+    ``'%%Y-%%m'`` ``'%%Y-%%m'`` ``'%%Y-%%m'`` (compatibility checks rely on
+    that exact SQL shape).
+    """
+
+    key = repr((platform_id, month, day, keyword, status, page, page_size))
+    now = monotonic()
+    entry = _hub_results_cache.get(key)
+    age = now - float(entry.get("created_at") or 0.0) if entry else None
+    task = _hub_results_tasks.get(key)
+    if entry and age is not None and age <= _HUB_RESULTS_TTL:
+        result = dict(entry["payload"])
+        result["meta"] = {
+            "freshness": "fresh",
+            "updated_at": datetime.now().isoformat(),
+            "age_seconds": round(age, 3),
+            "refreshing": False,
+        }
+        return result
+    if task is None or task.done():
+        task = asyncio.create_task(_run_hub_results(
+            key,
+            (platform_id, month, day, keyword, status, page, page_size),
+        ))
+        task.add_done_callback(_consume_hub_task)
+        _hub_results_tasks[key] = task
+    if entry:
+        result = dict(entry["payload"])
+        result["meta"] = {
+            "freshness": "stale",
+            "updated_at": None,
+            "age_seconds": round(age, 3) if age is not None else None,
+            "refreshing": True,
+        }
+        return result
+    try:
+        result = await asyncio.wait_for(asyncio.shield(task), _HUB_RESULTS_TIMEOUT)
+        return result
+    except asyncio.TimeoutError:
+        return {
+            "code": 503,
+            "msg": "赛果数据正在生成，请稍后重试",
+            "data": {},
+            "meta": {
+                "freshness": "degraded",
+                "updated_at": None,
+                "age_seconds": None,
+                "refreshing": True,
+            },
+        }
+    except Exception:
+        return {
+            "code": 503,
+            "msg": "赛果数据暂时不可用",
+            "data": {},
+            "meta": {
+                "freshness": "error_without_cache",
+                "updated_at": None,
+                "age_seconds": None,
+                "refreshing": False,
+            },
+        }
 
 
 @router.get("/platform/{platform_id}/export")

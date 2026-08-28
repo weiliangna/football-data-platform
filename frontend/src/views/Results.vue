@@ -51,6 +51,7 @@ import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue"
 import EmptyState from "../components/ui/EmptyState.vue"
 import ErrorState from "../components/ui/ErrorState.vue"
 import AppPagination from "../components/ui/AppPagination.vue"
+import { readCached, writeCached } from "../utils/cache.js"
 
 const today = new Date()
 const rows = ref([]), summary = ref({}), dateCounts = ref([])
@@ -71,14 +72,24 @@ const pageEnd = computed(() => Math.min(page.value * pageSize, total.value))
 const calendarCells = computed(() => { const base = monthDate.value; const offset = (base.getDay() + 6) % 7; const start = new Date(base.getFullYear(), base.getMonth(), 1 - offset); return Array.from({ length: 42 }, (_, index) => { const date = new Date(start.getFullYear(), start.getMonth(), start.getDate() + index); const value = localDate(date); return { key: value, date: value, day: date.getDate(), current: date.getMonth() === base.getMonth(), count: countMap.value[value] || 0 } }) })
 
 async function load() {
-  loading.value = true; error.value = ""
+  const cacheKey = `results:${month.value}:${selectedDay.value}:${keyword.value}:${status.value}:${page.value}`
+  const cached = readCached(cacheKey)
+  if (!rows.value.length && cached?.payload) {
+    const payload = cached.payload
+    rows.value = payload.rows || []
+    summary.value = payload.summary || {}
+    dateCounts.value = payload.date_counts || []
+    pages.value = payload.pages || 1
+    total.value = payload.total || 0
+  }
+  loading.value = !rows.value.length; error.value = ""
   try {
     const params = { day: selectedDay.value, keyword: keyword.value, status: status.value, page: page.value, page_size: pageSize }
     if (month.value) params.month = month.value
     const response = await axios.get("/api/hub/results", { params, timeout: 25000 })
     if (response.data?.code !== 200) throw new Error()
-    const data = response.data.data || {}; rows.value = data.rows || []; summary.value = data.summary || {}; dateCounts.value = data.date_counts || []; pages.value = data.pages || 1; total.value = data.total || 0; month.value = data.month || month.value || currentMonth()
-  } catch { rows.value = []; error.value = "赛果数据暂时不可用" } finally { loading.value = false }
+    const data = response.data.data || {}; rows.value = data.rows || []; summary.value = data.summary || {}; dateCounts.value = data.date_counts || []; pages.value = data.pages || 1; total.value = data.total || 0; month.value = data.month || month.value || currentMonth(); writeCached(cacheKey, data)
+  } catch { if (!rows.value.length) error.value = "赛果数据暂时不可用" } finally { loading.value = false }
 }
 
 function localDate(date) { const two = (value) => String(value).padStart(2, "0"); return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}` }

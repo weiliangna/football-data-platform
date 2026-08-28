@@ -48,6 +48,7 @@ import axios from "axios"
 import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue"
 import EmptyState from "../components/ui/EmptyState.vue"
 import ErrorState from "../components/ui/ErrorState.vue"
+import { readCached, writeCached } from "../utils/cache.js"
 
 const plays = ["胜平负", "让球胜平负", "半全场", "比分"]
 const playType = ref("胜平负")
@@ -69,7 +70,7 @@ const optionNames = computed(() => [...new Set(displayedMatches.value.flatMap((i
 async function load() {
   const requestedPlay = playType.value
   if (requestInFlight && activePlay === requestedPlay) return
-  const cached = playCache.get(requestedPlay)
+  const cached = playCache.get(requestedPlay) || readCached(`heatmap:${requestedPlay}`)?.payload
   if (cached) data.value = cached
   requestController?.abort()
   requestController = new AbortController()
@@ -83,15 +84,13 @@ async function load() {
     if (response.data?.code !== 200) throw new Error()
     const next = response.data.data || {}
     playCache.set(requestedPlay, next)
+    writeCached(`heatmap:${requestedPlay}`, next)
     if (playType.value !== requestedPlay) return
     data.value = next
     if (selectedMatch.value && !matches.value.some((item) => matchKey(item) === selectedMatch.value)) selectedMatch.value = ""
   } catch (requestError) {
     if (requestError?.code === "ERR_CANCELED") return
-    if (initialLoad) {
-      data.value = {}
-      error.value = "热力数据暂时不可用"
-    }
+    if (initialLoad && !Object.keys(data.value).length) error.value = "热力数据暂时不可用"
   } finally { if (activePlay === requestedPlay) { requestInFlight = false; loading.value = false } }
 }
 

@@ -63,6 +63,21 @@ _snapshot_executor = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="portal-snapshot",
 )
+_read_executor = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="portal-read",
+)
+_local_read_cache = {}
+_local_read_tasks = {}
+_LOCAL_READ_TIMEOUT = 2.5
+_LOCAL_READ_TTLS = {
+    "schemes": 20.0,
+    "analysis": 60.0,
+    "heatmap": 60.0,
+    "users": 60.0,
+    "results": 60.0,
+    "user_detail": 300.0,
+}
 _dashboard_cache = {
     "data": None,
     "created_at": 0.0,
@@ -2189,8 +2204,7 @@ async def dashboard():
         return minimal or _empty_dashboard_response()
 
 
-@router.get("/schemes")
-def schemes(
+def _schemes_uncached(
     platform_id: int = 0,
     keyword: str = "",
     result: str = "",
@@ -2313,8 +2327,7 @@ def schemes(
             conn.close()
 
 
-@router.get("/user/{platform_id}/{user_id}")
-def user_detail(platform_id: int, user_id: int):
+def _user_detail_uncached(platform_id: int, user_id: int):
     conn = None
     cursor = None
 
@@ -2599,8 +2612,7 @@ def aggregate_heatmap(ctx, play_type):
     }
 
 
-@router.get("/heatmap")
-def heatmap(play_type: str = "胜平负"):
+def _heatmap_uncached(play_type: str = "胜平负"):
     conn = None
     cursor = None
 
@@ -2638,8 +2650,7 @@ def heatmap(play_type: str = "胜平负"):
             conn.close()
 
 
-@router.get("/analysis")
-def analysis():
+def _analysis_uncached():
     conn = None
     cursor = None
 
@@ -2716,8 +2727,7 @@ def analysis():
             conn.close()
 
 
-@router.get("/users")
-def users(
+def _users_uncached(
     platform_id: int = 0,
     keyword: str = "",
     sort: str = "score",
@@ -2980,8 +2990,7 @@ def users(
             conn.close()
 
 
-@router.get("/results")
-def results(
+def _results_uncached(
     page: int = 1,
     page_size: int = 50,
 ):
@@ -3134,6 +3143,177 @@ def results(
             cursor.close()
         if conn:
             conn.close()
+
+
+def _read_meta_payload(payload, freshness, created_at, refreshing=False,
+                       updated_at=None):
+    """Attach freshness metadata without changing an endpoint's data shape."""
+
+    result = dict(payload or {})
+    age = max(0.0, monotonic() - created_at) if created_at else None
+    result["meta"] = {
+        "freshness": freshness,
+        "updated_at": updated_at or datetime.now().isoformat(),
+        "age_seconds": round(age, 3) if age is not None else None,
+        "refreshing": bool(refreshing),
+    }
+    return result
+
+
+async def _execute_local_read(key, function, args):
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(_read_executor, function, *args)
+    if isinstance(result, dict) and result.get("code") == 200:
+        _local_read_cache[key] = {
+            "payload": result,
+            "created_at": monotonic(),
+            "updated_at": datetime.now().isoformat(),
+        }
+    return result
+
+
+def _consume_task(task):
+    try:
+        task.exception()
+    except BaseException:
+        pass
+
+
+async def _serve_local_read(key, function, args, empty_data):
+    """Serve a local read from cache and single-flight refreshes.
+
+    A stale response is always preferred over an empty response.  Cold reads
+    are bounded so a slow MySQL query cannot occupy an API worker for tens of
+    seconds; the query continues in the bounded executor and warms the cache.
+    """
+
+    now = monotonic()
+    entry = _local_read_cache.get(key)
+    age = now - float(entry.get("created_at") or 0.0) if entry else None
+    ttl = _LOCAL_READ_TTLS.get(key.split(":", 1)[0], 60.0)
+    task = _local_read_tasks.get(key)
+
+    if entry and age is not None and age <= ttl:
+        return _read_meta_payload(
+            entry["payload"], "fresh", entry["created_at"],
+            updated_at=entry.get("updated_at"),
+        )
+
+    if task is None or task.done():
+        task = asyncio.create_task(_execute_local_read(key, function, args))
+        task.add_done_callback(_consume_task)
+        _local_read_tasks[key] = task
+
+    if entry:
+        return _read_meta_payload(
+            entry["payload"], "stale", entry["created_at"], True,
+            entry.get("updated_at"),
+        )
+
+    try:
+        result = await asyncio.wait_for(asyncio.shield(task), _LOCAL_READ_TIMEOUT)
+        if isinstance(result, dict):
+            return _read_meta_payload(result, "fresh", monotonic())
+        return result
+    except asyncio.TimeoutError:
+        return {
+            "code": 503,
+            "msg": "数据正在生成，请稍后重试",
+            "data": empty_data,
+            "meta": {
+                "freshness": "degraded",
+                "updated_at": None,
+                "age_seconds": None,
+                "refreshing": True,
+            },
+        }
+    except Exception as exc:
+        return {
+            "code": 503,
+            "msg": "数据暂时不可用",
+            "data": empty_data,
+            "meta": {
+                "freshness": "error_without_cache",
+                "updated_at": None,
+                "age_seconds": None,
+                "refreshing": False,
+            },
+        }
+
+
+@router.get("/schemes")
+async def schemes(
+    platform_id: int = 0,
+    keyword: str = "",
+    result: str = "",
+    page: int = 1,
+    page_size: int = 30,
+):
+    key = "schemes:%s" % repr((platform_id, keyword, result, page, page_size))
+    return await _serve_local_read(
+        key,
+        _schemes_uncached,
+        (platform_id, keyword, result, page, page_size),
+        [],
+    )
+
+
+@router.get("/user/{platform_id}/{user_id}")
+async def user_detail(platform_id: int, user_id: int):
+    key = "user_detail:%s:%s" % (platform_id, user_id)
+    return await _serve_local_read(
+        key,
+        _user_detail_uncached,
+        (platform_id, user_id),
+        {},
+    )
+
+
+@router.get("/heatmap")
+async def heatmap(play_type: str = "胜平负"):
+    play_type = play_type if play_type in FOUR_PLAYS else "胜平负"
+    return await _serve_local_read(
+        "heatmap:%s" % play_type,
+        _heatmap_uncached,
+        (play_type,),
+        {},
+    )
+
+
+@router.get("/analysis")
+async def analysis():
+    return await _serve_local_read("analysis", _analysis_uncached, (), {})
+
+
+@router.get("/users")
+async def users(
+    platform_id: int = 0,
+    keyword: str = "",
+    sort: str = "score",
+    real_profit: str = "all",
+    favorite_play: str = "",
+    min_streak: int = 0,
+    recent_form: str = "all",
+    min_hit_rate: float = 0,
+    min_roi: float = -999999,
+    first_order_tag: str = "",
+    page: int = 1,
+    page_size: int = 30,
+):
+    key = "users:%s" % repr((platform_id, keyword, sort, real_profit,
+                              favorite_play, min_streak, recent_form,
+                              min_hit_rate, min_roi, first_order_tag,
+                              page, page_size))
+    args = (platform_id, keyword, sort, real_profit, favorite_play,
+            min_streak, recent_form, min_hit_rate, min_roi, first_order_tag,
+            page, page_size)
+    return await _serve_local_read(key, _users_uncached, args, [])
+
+
+@router.get("/results")
+async def results(page: int = 1, page_size: int = 50):
+    key = "results:%s" % repr((page, page_size))
+    return await _serve_local_read(key, _results_uncached, (page, page_size), [])
 
 
 @router.get("/order/{order_id}")

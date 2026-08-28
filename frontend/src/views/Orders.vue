@@ -87,6 +87,7 @@ import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue"
 import EmptyState from "../components/ui/EmptyState.vue"
 import ErrorState from "../components/ui/ErrorState.vue"
 import AppPagination from "../components/ui/AppPagination.vue"
+import { readCached, writeCached } from "../utils/cache.js"
 
 const router = useRouter()
 const platform = ref("")
@@ -124,22 +125,29 @@ async function loadPlatforms() {
 }
 
 async function load() {
-  loading.value = true
-  error.value = ""
   const params = { page: page.value, page_size: 30, keyword: keyword.value, result: result.value }
   if (platform.value) params.platform_id = Number(platform.value)
+  const cacheKey = `schemes:${JSON.stringify(params)}`
+  const cached = readCached(cacheKey)
+  if (!orders.value.length && cached?.payload) {
+    orders.value = cached.payload.data || []
+    page.value = cached.payload.page || 1
+    pages.value = cached.payload.pages || 1
+    total.value = cached.payload.total || 0
+  }
+  loading.value = !orders.value.length
+  error.value = ""
   try {
-    const response = await axios.get("/api/portal/schemes", { params, timeout: 25000 })
+    const response = await axios.get("/api/portal/schemes", { params, timeout: 8000 })
     if (!response.data || response.data.code !== 200) throw new Error()
     orders.value = response.data.data || []
     page.value = response.data.page || 1
     pages.value = response.data.pages || 1
     total.value = response.data.total || 0
     expandedOrders.value = new Set()
+    writeCached(cacheKey, { data: orders.value, page: page.value, pages: pages.value, total: total.value })
   } catch {
-    orders.value = []
-    total.value = 0
-    error.value = "方案数据暂时不可用"
+    if (!orders.value.length) error.value = "方案数据暂时不可用"
   } finally { loading.value = false }
 }
 
