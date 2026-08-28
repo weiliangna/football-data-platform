@@ -131,6 +131,7 @@ def _upsert_values(user, result_rows):
 
 def main():
     started = time.perf_counter()
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     with statistics_lock() as acquired:
         if not acquired:
             print("statistics already running, skip")
@@ -140,6 +141,7 @@ def main():
         cursor = None
         aggregate_ms = results_ms = calculate_ms = upsert_ms = 0.0
         sql_query_count = 0
+        commit_count = 0
         users = []
         try:
             conn = get_conn()
@@ -196,6 +198,7 @@ def main():
                     cursor.executemany(UPSERT_SQL, batch)
                     sql_query_count += 1
                     conn.commit()
+                    commit_count += 1
                 except Exception:
                     conn.rollback()
                     print("statistics batch failed:", [(row[0], row[1]) for row in batch])
@@ -203,11 +206,15 @@ def main():
             upsert_ms = (time.perf_counter() - upsert_started) * 1000
             total_ms = (time.perf_counter() - started) * 1000
             orders_count = sum(int(user.get("total_orders") or 0) for user in users)
+            upsert_count = (len(values) + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
             print(
-                "[statistics] users=%d orders=%d aggregate=%.2fms results=%.2fms "
-                "calculate=%.2fms upsert=%.2fms total=%.2fms sql_queries=%d"
-                % (len(users), orders_count, aggregate_ms, results_ms, calculate_ms,
-                   upsert_ms, total_ms, sql_query_count)
+                "[job] job_name=statistics started_at=%s rows_read=%d rows_updated=%d "
+                "rows_skipped=0 sql_count=%d commit_count=%d duration_ms=%.2f "
+                "users_processed=%d select_count=2 upsert_count=%d orders=%d "
+                "aggregate=%.2fms results=%.2fms calculate=%.2fms upsert=%.2fms"
+                % (started_at, orders_count, len(values),
+                   sql_query_count, commit_count, total_ms, len(users), upsert_count,
+                   orders_count, aggregate_ms, results_ms, calculate_ms, upsert_ms)
             )
         except Exception:
             if conn:
