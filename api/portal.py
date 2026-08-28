@@ -4,6 +4,7 @@ import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from threading import Lock
 from time import monotonic
 
 import pymysql
@@ -59,6 +60,13 @@ _dashboard_cache = {
     "created_at": 0.0,
 }
 _dashboard_refresh_task = None
+CURRENT_CONTEXT_CACHE_SECONDS = 30.0
+_current_context_cache = {
+    "data": None,
+    "created_at": 0.0,
+    "has_profiles": False,
+}
+_current_context_lock = Lock()
 
 
 def money(value):
@@ -321,14 +329,34 @@ def find_caizhanyun_reference(
             best["reversed_order"] = reversed_order
     return best if best_score >= 0.62 else {}
 
-def load_profiles(cursor):
+def _user_pair_filter(user_keys, alias=""):
+    prefix = f"{alias}." if alias else ""
+    if user_keys is None:
+        return "", []
+    keys = [
+        (intv(platform_id), intv(user_id))
+        for platform_id, user_id in user_keys
+        if intv(platform_id) and intv(user_id)
+    ]
+    if not keys:
+        return " WHERE 1=0", []
+    sql = " OR ".join(
+        [f"({prefix}platform_id=%s AND {prefix}user_id=%s)" for _ in keys]
+    )
+    return f" WHERE ({sql})", [value for key in keys for value in key]
+
+
+def load_profiles(cursor, user_keys=None):
     result = {}
     try:
+        where_sql, params = _user_pair_filter(user_keys)
         cursor.execute(
-            """
+            f"""
             SELECT platform_id,user_id,nickname,avatar_url
             FROM user_profiles_ext
-            """
+            {where_sql}
+            """,
+            tuple(params),
         )
         for row in cursor.fetchall():
             result[
@@ -345,11 +373,12 @@ def load_profiles(cursor):
     return result
 
 
-def load_user_statistics(cursor):
+def load_user_statistics(cursor, user_keys=None):
     result = {}
     try:
+        where_sql, params = _user_pair_filter(user_keys)
         cursor.execute(
-            """
+            f"""
             SELECT
                 platform_id,
                 user_id,
@@ -360,7 +389,9 @@ def load_user_statistics(cursor):
                 roi,
                 follow_num
             FROM user_statistics
-            """
+            {where_sql}
+            """,
+            tuple(params),
         )
         for row in cursor.fetchall():
             result[
@@ -643,15 +674,58 @@ def load_orders_for_day(cursor, target_day, pending_only=False):
     return cursor.fetchall()
 
 
-def load_pending_orders(cursor):
-    cursor.execute(
+def load_pending_orders(cursor, target_day=None):
+    if target_day is None:
+        cursor.execute(
+            """
+            SELECT o.*
+            FROM orders o
+            WHERE o.platform_id IN (1,2,3,4)
+              AND o.result='待开奖'
+            ORDER BY o.id DESC
+            """
+        )
+        return cursor.fetchall()
+
+    day_start = datetime.combine(target_day, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
+    match_columns = table_columns(cursor, "order_matches")
+    deadline_clause = ""
+    params = [day_start - timedelta(days=14)]
+    if "deadline_time" in match_columns:
+        deadline_clause = """
+            OR EXISTS (
+                SELECT 1
+                FROM order_matches deadline_match
+                WHERE deadline_match.order_id=o.id
+                  AND deadline_match.deadline_time>=%s
+                  AND deadline_match.deadline_time<%s
+            )
         """
+        params.extend([day_start, day_end])
+    if "match_date" in match_columns:
+        deadline_clause += """
+            OR EXISTS (
+                SELECT 1
+                FROM order_matches dated_match
+                WHERE dated_match.order_id=o.id
+                  AND dated_match.match_date=%s
+            )
+        """
+        params.append(target_day)
+    cursor.execute(
+        f"""
         SELECT o.*
         FROM orders o
         WHERE o.platform_id IN (1,2,3,4)
           AND o.result='待开奖'
+          AND (
+              COALESCE(o.publish_time,o.created_time)>=%s
+              {deadline_clause}
+          )
         ORDER BY o.id DESC
-        """
+        """,
+        tuple(params),
     )
     return cursor.fetchall()
 
@@ -1284,7 +1358,7 @@ def build_current_context(cursor, include_profiles=False):
         cursor,
         alias_map,
     )
-    profiles = load_profiles(cursor) if include_profiles else {}
+    profiles = {}
     schedule_by_code, schedule_by_name = load_match_schedule(cursor)
 
     orders = load_orders_for_day(
@@ -1323,7 +1397,7 @@ def build_current_context(cursor, include_profiles=False):
             if source in deadline_summary:
                 deadline_summary[source] += 1
 
-    pending_orders = load_pending_orders(cursor)
+    pending_orders = load_pending_orders(cursor, target_day)
     pending_grouped = load_hot_play_matches(
         cursor,
         [intv(order.get("id")) for order in pending_orders],
@@ -1350,6 +1424,15 @@ def build_current_context(cursor, include_profiles=False):
                 continue
             today_hot_legs.append((order, row, deadline))
 
+    if include_profiles:
+        profiles = load_profiles(
+            cursor,
+            [
+                (order.get("platform_id"), order.get("user_id"))
+                for order, _matches in unexpired
+            ],
+        )
+
     return {
         "now": now,
         "day": target_day,
@@ -1362,6 +1445,36 @@ def build_current_context(cursor, include_profiles=False):
         "today_hot_legs": today_hot_legs,
         "deadline_summary": deadline_summary,
     }
+
+
+def get_current_context(cursor, include_profiles=False):
+    now = monotonic()
+    cached = _current_context_cache.get("data")
+    age = now - float(_current_context_cache.get("created_at") or 0.0)
+    profiles_ready = bool(_current_context_cache.get("has_profiles"))
+    if (
+        cached is not None
+        and age <= CURRENT_CONTEXT_CACHE_SECONDS
+        and (not include_profiles or profiles_ready)
+    ):
+        return cached
+
+    with _current_context_lock:
+        now = monotonic()
+        cached = _current_context_cache.get("data")
+        age = now - float(_current_context_cache.get("created_at") or 0.0)
+        profiles_ready = bool(_current_context_cache.get("has_profiles"))
+        if (
+            cached is not None
+            and age <= CURRENT_CONTEXT_CACHE_SECONDS
+            and (not include_profiles or profiles_ready)
+        ):
+            return cached
+        context = build_current_context(cursor, include_profiles=include_profiles)
+        _current_context_cache["data"] = context
+        _current_context_cache["created_at"] = now
+        _current_context_cache["has_profiles"] = bool(include_profiles)
+        return context
 
 
 def aggregate_today_hot_plays(ctx):
@@ -1463,8 +1576,8 @@ def load_recent_user_metrics(cursor, user_keys):
             IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_SUB(NOW(),INTERVAL 7 DAY) AND o.result<>'待开奖' THEN o.profit ELSE 0 END),0) AS profit7d,
             SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=CURDATE() THEN 1 ELSE 0 END) AS today_orders,
             IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=CURDATE() THEN o.follow_num ELSE 0 END),0) AS today_followers,
-            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_FORMAT(CURDATE(),'%Y-%m-01') AND o.result<>'待开奖' THEN o.stake ELSE 0 END),0) AS month_stake,
-            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_FORMAT(CURDATE(),'%Y-%m-01') AND o.result<>'待开奖' THEN o.profit ELSE 0 END),0) AS month_profit
+            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_FORMAT(CURDATE(),'%%Y-%%m-01') AND o.result<>'待开奖' THEN o.stake ELSE 0 END),0) AS month_stake,
+            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_FORMAT(CURDATE(),'%%Y-%%m-01') AND o.result<>'待开奖' THEN o.profit ELSE 0 END),0) AS month_profit
         FROM orders o
         WHERE ({pair_sql})
           AND COALESCE(o.publish_time,o.created_time)<=NOW()
@@ -1578,7 +1691,7 @@ def build_dashboard_response():
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        ctx = build_current_context(cursor, include_profiles=True)
+        ctx = get_current_context(cursor, include_profiles=True)
         target_day = ctx["day"]
         now = ctx["now"]
         alias_map = ctx["alias_map"]
@@ -1586,7 +1699,13 @@ def build_dashboard_response():
         profiles = ctx["profiles"]
         unexpired = ctx["unexpired"]
         hot_plays = aggregate_today_hot_plays(ctx)
-        statistics = load_user_statistics(cursor)
+        statistics = load_user_statistics(
+            cursor,
+            [
+                (order.get("platform_id"), order.get("user_id"))
+                for order, _matches in unexpired
+            ],
+        )
 
         yesterday = target_day - timedelta(days=1)
 
@@ -1891,8 +2010,12 @@ def schemes(
             cursor,
             alias_map,
         )
-        profiles = load_profiles(cursor)
-        statistics = load_user_statistics(cursor)
+        user_keys = [
+            (order.get("platform_id"), order.get("user_id"))
+            for order in orders
+        ]
+        profiles = load_profiles(cursor, user_keys)
+        statistics = load_user_statistics(cursor, user_keys)
 
         data = [
             enrich_order(
@@ -2232,7 +2355,7 @@ def heatmap(play_type: str = "胜平负"):
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        ctx = build_current_context(cursor)
+        ctx = get_current_context(cursor)
         data = aggregate_heatmap(ctx, play_type)
 
         data["day"] = str(ctx["day"])
@@ -2268,7 +2391,7 @@ def analysis():
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        ctx = build_current_context(cursor)
+        ctx = get_current_context(cursor)
 
         play_data = {
             play: aggregate_heatmap(ctx, play)
@@ -2795,7 +2918,10 @@ def order_detail(order_id: int):
             cursor,
             alias_map,
         )
-        profiles = load_profiles(cursor)
+        profiles = load_profiles(
+            cursor,
+            [(order.get("platform_id"), order.get("user_id"))],
+        )
 
         data = enrich_order(
             order,

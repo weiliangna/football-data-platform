@@ -79,7 +79,11 @@ class ScpaiPublicAdapter:
         external_id = str(external_id or "")
         if not MATCH_ID_PATTERN.fullmatch(external_id):
             raise ScpaiNotFoundError("比赛不存在")
-        dashboard, _status, _fetched_at = self._dashboard()
+        cached_dashboard = self.cache.get("dashboard:-")
+        if cached_dashboard:
+            dashboard = cached_dashboard.data
+        else:
+            dashboard, _status, _fetched_at = self._dashboard()
         if dashboard is None:
             raise ScpaiAdapterError("公开比赛数据暂时不可用")
         allowed = {item.get("externalId") for item in dashboard.get("matches", [])}

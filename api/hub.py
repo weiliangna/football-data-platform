@@ -1272,7 +1272,7 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
             latest=cursor.fetchone() or {}
             month=latest.get("m") or datetime.now().strftime("%Y-%m")
         where=[
-            f"DATE_FORMAT({archive_date},'%Y-%m')=%s",
+            f"DATE_FORMAT({archive_date},'%%Y-%%m')=%s",
             "o.platform_id IN (1,2,3,4)",
         ]
         params=[month]
@@ -1312,9 +1312,9 @@ def hub_results(platform_id:int=0, month:str="", day:str="", keyword:str="", sta
                 r["odds_text"]=" / ".join(item["odds"] for item in r["matches"] if item.get("odds"))
             wins=intv(r.get("win_orders")); losses=intv(r.get("lose_orders"))
             r["history_record"]=f"{wins}胜{losses}负" if wins+losses else "--"
-        cursor.execute(f"SELECT DISTINCT DATE_FORMAT({archive_date},'%Y-%m') AS m FROM orders o {archive_join} WHERE o.platform_id IN (1,2,3,4) AND (%s=0 OR o.platform_id=%s) ORDER BY m DESC LIMIT 24",(platform_id,platform_id))
+        cursor.execute(f"SELECT DISTINCT DATE_FORMAT({archive_date},'%%Y-%%m') AS m FROM orders o {archive_join} WHERE o.platform_id IN (1,2,3,4) AND (%s=0 OR o.platform_id=%s) ORDER BY m DESC LIMIT 24",(platform_id,platform_id))
         months=[x["m"] for x in cursor.fetchall() if x.get("m")]
-        summary_where=[f"DATE_FORMAT({archive_date},'%Y-%m')=%s","o.platform_id IN (1,2,3,4)"]
+        summary_where=[f"DATE_FORMAT({archive_date},'%%Y-%%m')=%s","o.platform_id IN (1,2,3,4)"]
         summary_params=[month]
         if platform_id>0:
             summary_where.append("o.platform_id=%s"); summary_params.append(platform_id)
