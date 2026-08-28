@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from api import settlement
+from api import portal
 from common import match_identity
 from spider import auto_settlement, caizhanyun_pipeline, caizhanyun_enrich, sync_avatars
 
@@ -42,6 +43,16 @@ class P0DatabaseOptimizationTests(unittest.TestCase):
         timer = (ROOT / "deploy/systemd/football-statistics.timer").read_text(encoding="utf-8")
         self.assertIn("OnUnitActiveSec=300s", timer)
         self.assertNotIn("OnUnitActiveSec=30s", timer)
+
+    def test_dashboard_cache_and_top30_pipeline_contract(self):
+        self.assertEqual(portal.DASHBOARD_CACHE_SECONDS, 60.0)
+        self.assertEqual(portal.DASHBOARD_STALE_SECONDS, 300.0)
+        self.assertEqual(portal.DASHBOARD_FIRST_RESPONSE_TIMEOUT, 8.0)
+        source = inspect.getsource(portal.build_dashboard_response)
+        self.assertIn("get_current_context(cursor, include_profiles=False)", source)
+        self.assertIn("candidate_ranking[:30]", source)
+        self.assertIn("load_platform_day_metrics", source)
+        self.assertIn("load_day_metrics", source)
 
 
 if __name__ == "__main__":

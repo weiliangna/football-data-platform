@@ -5,7 +5,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from threading import Lock
-from time import monotonic
+from time import monotonic, perf_counter
 
 import pymysql
 from fastapi import APIRouter
@@ -48,9 +48,9 @@ PLATFORMS = {
 
 FOUR_PLAYS = STANDARD_PLAYS
 
-DASHBOARD_CACHE_SECONDS = 15.0
-DASHBOARD_STALE_SECONDS = 120.0
-DASHBOARD_FIRST_RESPONSE_TIMEOUT = 12.0
+DASHBOARD_CACHE_SECONDS = 60.0
+DASHBOARD_STALE_SECONDS = 300.0
+DASHBOARD_FIRST_RESPONSE_TIMEOUT = 8.0
 _dashboard_executor = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="portal-dashboard",
@@ -1683,6 +1683,64 @@ def load_recent_user_metrics(cursor, user_keys):
     return metrics
 
 
+def load_day_metrics(cursor, target_day):
+    """Aggregate dashboard day counters in MySQL using the existing event-day window."""
+
+    day_start = datetime.combine(target_day, datetime.min.time()) + timedelta(hours=6)
+    day_end = day_start + timedelta(days=1)
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*) AS plans,
+            SUM(CASE WHEN result='赢' THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN result='输' THEN 1 ELSE 0 END) AS lost,
+            SUM(CASE WHEN result<>'待开奖' THEN 1 ELSE 0 END) AS settled,
+            IFNULL(SUM(follow_num),0) AS followers,
+            IFNULL(SUM(stake),0) AS amount
+        FROM orders
+        WHERE COALESCE(publish_time,created_time)>=%s
+          AND COALESCE(publish_time,created_time)<%s
+          AND platform_id IN (1,2,3,4)
+        """,
+        (day_start, day_end),
+    )
+    row = cursor.fetchone() or {}
+    return {
+        "plans": intv(row.get("plans")),
+        "wins": intv(row.get("wins")),
+        "lost": intv(row.get("lost")),
+        "settled": intv(row.get("settled")),
+        "followers": intv(row.get("followers")),
+        "amount": round(money(row.get("amount")), 2),
+    }
+
+
+def load_platform_day_metrics(cursor, target_day):
+    day_start = datetime.combine(target_day, datetime.min.time()) + timedelta(hours=6)
+    day_end = day_start + timedelta(days=1)
+    cursor.execute(
+        """
+        SELECT platform_id,COUNT(*) AS order_count,
+               IFNULL(SUM(stake),0) AS amount,
+               IFNULL(SUM(follow_num),0) AS followers
+        FROM orders
+        WHERE COALESCE(publish_time,created_time)>=%s
+          AND COALESCE(publish_time,created_time)<%s
+          AND platform_id IN (1,2,3,4)
+        GROUP BY platform_id
+        """,
+        (day_start, day_end),
+    )
+    return {
+        intv(row.get("platform_id")): {
+            "order_count": intv(row.get("order_count")),
+            "amount": round(money(row.get("amount")), 2),
+            "followers": intv(row.get("followers")),
+        }
+        for row in cursor.fetchall() or []
+    }
+
+
 def build_dashboard_response():
     conn = None
     cursor = None
@@ -1691,136 +1749,116 @@ def build_dashboard_response():
         conn = get_conn()
         cursor = conn.cursor(pymysql.cursors.DictCursor)
 
-        ctx = get_current_context(cursor, include_profiles=True)
+        build_started = perf_counter()
+        ctx = get_current_context(cursor, include_profiles=False)
+        current_context_ms = (perf_counter() - build_started) * 1000
         target_day = ctx["day"]
         now = ctx["now"]
         alias_map = ctx["alias_map"]
         match_references = ctx["match_references"]
-        profiles = ctx["profiles"]
         unexpired = ctx["unexpired"]
+        users_count = len({(intv(order.get("platform_id")), intv(order.get("user_id"))) for order, _ in unexpired})
+        ranking_candidates = 0
         hot_plays = aggregate_today_hot_plays(ctx)
-        statistics = load_user_statistics(
-            cursor,
-            [
-                (order.get("platform_id"), order.get("user_id"))
-                for order, _matches in unexpired
-            ],
-        )
+        hot_plays_ms = (perf_counter() - build_started) * 1000 - current_context_ms
 
         yesterday = target_day - timedelta(days=1)
-
-        yesterday_orders = load_orders_for_day(
-            cursor,
-            yesterday,
-            pending_only=False
-        )
-        today_all = load_orders_for_day(
-            cursor,
-            target_day,
-            pending_only=False
-        )
-        yesterday_settled = [
-            order
-            for order in yesterday_orders
-            if str(order.get("result") or "") != "待开奖"
-        ]
+        today_metrics_started = perf_counter()
+        today_day_metrics = load_day_metrics(cursor, target_day)
+        today_metrics_ms = (perf_counter() - today_metrics_started) * 1000
+        yesterday_metrics_started = perf_counter()
+        yesterday_day_metrics = load_day_metrics(cursor, yesterday)
+        yesterday_metrics_ms = (perf_counter() - yesterday_metrics_started) * 1000
+        platform_metrics_started = perf_counter()
+        platform_metrics = load_platform_day_metrics(cursor, target_day)
+        platform_metrics_ms = (perf_counter() - platform_metrics_started) * 1000
 
         metrics = {
-            "yesterday_plans": len(yesterday_orders),
-            "yesterday_wins": sum(
-                1
-                for order in yesterday_orders
-                if str(order.get("result") or "") == "赢"
-            ),
-            "yesterday_lost": sum(
-                1
-                for order in yesterday_settled
-                if str(order.get("result") or "") == "输"
-            ),
-            "yesterday_settled": len(yesterday_settled),
-            "today_plans": len(today_all),
-            "today_followers": sum(
-                intv(order.get("follow_num"))
-                for order in today_all
-            ),
-            "today_amount": round(
-                sum(
-                    money(order.get("stake"))
-                    for order in today_all
-                ),
-                2
-            ),
+            "yesterday_plans": yesterday_day_metrics["plans"],
+            "yesterday_wins": yesterday_day_metrics["wins"],
+            "yesterday_lost": yesterday_day_metrics["lost"],
+            "yesterday_settled": yesterday_day_metrics["settled"],
+            "today_plans": today_day_metrics["plans"],
+            "today_followers": today_day_metrics["followers"],
+            "today_amount": today_day_metrics["amount"],
             "unexpired_plans": len(unexpired),
         }
 
         platform_rows = []
         for platform_id in (1, 3, 2, 4):
-            rows = [
-                order
-                for order in today_all
-                if intv(order.get("platform_id")) == platform_id
-            ]
+            row = platform_metrics.get(platform_id, {})
             platform_rows.append(
                 {
                     "platform_id": platform_id,
                     "platform_name": PLATFORMS[platform_id],
-                    "order_count": len(rows),
-                    "amount": round(
-                        sum(
-                            money(order.get("stake"))
-                            for order in rows
-                        ),
-                        2
-                    ),
-                    "followers": sum(
-                        intv(order.get("follow_num"))
-                        for order in rows
-                    ),
+                    "order_count": row.get("order_count", 0),
+                    "amount": row.get("amount", 0.0),
+                    "followers": row.get("followers", 0),
                 }
             )
 
-        user_groups = {}
+        lightweight_groups = {}
+        for order, _matches in unexpired:
+            platform_id = intv(order.get("platform_id"))
+            user_id = intv(order.get("user_id"))
+            key = (platform_id, user_id)
+            group = lightweight_groups.setdefault(
+                key,
+                {"platform_id": platform_id, "user_id": user_id,
+                 "amount": 0.0, "followers": 0, "order_count": 0},
+            )
+            group["amount"] += money(order.get("stake"))
+            group["followers"] += intv(order.get("follow_num"))
+            group["order_count"] += 1
 
+        ranking_candidates = len(lightweight_groups)
+        candidate_ranking = sorted(
+            lightweight_groups.values(),
+            key=lambda item: (item["amount"], item["followers"], item["order_count"]),
+            reverse=True,
+        )
+        top_keys = {
+            (item["platform_id"], item["user_id"])
+            for item in candidate_ranking[:30]
+        }
+
+        profiles_started = perf_counter()
+        profiles = load_profiles(cursor, top_keys)
+        profiles_ms = (perf_counter() - profiles_started) * 1000
+        statistics_started = perf_counter()
+        statistics = load_user_statistics(cursor, top_keys)
+        user_statistics_ms = (perf_counter() - statistics_started) * 1000
+
+        user_groups = {}
+        enrich_started = perf_counter()
         for order, matches in unexpired:
             platform_id = intv(order.get("platform_id"))
             user_id = intv(order.get("user_id"))
             key = (platform_id, user_id)
-
+            if key not in top_keys:
+                continue
             if key not in user_groups:
                 profile = profiles.get(key, {})
                 user_groups[key] = {
                     "platform_id": platform_id,
-                    "platform_name": PLATFORMS.get(
-                        platform_id,
-                        f"平台{platform_id}"
-                    ),
+                    "platform_name": PLATFORMS.get(platform_id, f"平台{platform_id}"),
                     "user_id": user_id,
-                    "nickname": (
-                        order.get("nickname")
-                        or profile.get("nickname")
-                        or "未知用户"
-                    ),
+                    "nickname": order.get("nickname") or profile.get("nickname") or "未知用户",
                     "avatar_url": profile.get("avatar_url") or "",
                     "amount": 0.0,
                     "followers": 0,
                     "bonus": 0.0,
                     "orders": [],
                 }
-
             group = user_groups[key]
             group["amount"] += money(order.get("stake"))
             group["followers"] += intv(order.get("follow_num"))
             group["bonus"] += money(order.get("platform_bonus"))
             group["orders"].append(
-                enrich_order(
-                    order,
-                    matches,
-                    alias_map,
-                    profiles,
-                    statistics=statistics,
-                    match_references=match_references,
-                )
+                enrich_order(order, matches, alias_map, profiles,
+                             statistics=statistics, match_references=match_references)
             )
+        enrich_ms = (perf_counter() - enrich_started) * 1000
 
         for key, group in user_groups.items():
             stat = statistics.get(key, {})
@@ -1849,6 +1887,18 @@ def build_dashboard_response():
             ),
             reverse=True,
         )[:30]
+
+        dashboard_total_ms = (perf_counter() - build_started) * 1000
+        print(
+            "[dashboard] context=%.2fms hot_plays=%.2fms today_metrics=%.2fms "
+            "yesterday_metrics=%.2fms platform_metrics=%.2fms profiles=%.2fms "
+            "user_statistics=%.2fms enrich=%.2fms total=%.2fms orders_count=%d "
+            "unexpired_count=%d users_count=%d ranking_candidates=%d enriched_orders_count=%d"
+            % (current_context_ms, hot_plays_ms, today_metrics_ms, yesterday_metrics_ms,
+               platform_metrics_ms, profiles_ms, user_statistics_ms, enrich_ms,
+               dashboard_total_ms, metrics["today_plans"], len(unexpired), users_count,
+               ranking_candidates, sum(len(item["orders"]) for item in ranking))
+        )
 
         for index, group in enumerate(ranking, start=1):
             group["rank"] = index

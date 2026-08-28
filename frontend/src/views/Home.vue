@@ -142,6 +142,7 @@ const error = ref("")
 let requestInFlight = false
 const now = ref(new Date())
 let timer
+const DASHBOARD_REFRESH_MS = 60000 // replaces the former 30000ms polling interval
 
 const metrics = computed(() => data.value.metrics || {})
 const platformBets = computed(() => data.value.platform_bets || [])
@@ -207,7 +208,7 @@ function resultClass(value) { return `status-chip ${value === "赢" ? "success" 
 function scheduleRefresh() {
   clearInterval(timer)
   timer = document.visibilityState === "visible"
-    ? setInterval(() => { now.value = new Date(); load() }, 30000)
+    ? setInterval(() => { now.value = new Date(); load() }, DASHBOARD_REFRESH_MS)
     : null
 }
 function handleVisibilityChange() {
