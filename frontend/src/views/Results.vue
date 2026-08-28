@@ -36,7 +36,7 @@
     <section class="date-card app-card">
       <header class="date-header"><strong>{{ selectedDay || monthLabel }}</strong><span>{{ number(total) }} 个方案</span><div><button type="button" :class="{ active: status === 'pending' }" @click="setStatus('pending')">未开奖</button><button type="button" :class="{ active: status === 'won' }" @click="setStatus('won')">已中奖</button><button type="button" :class="{ active: !status }" @click="setStatus('')">全部</button></div></header>
       <LoadingSkeleton v-if="loading" :count="8"/>
-      <ErrorState v-else-if="error" :description="error" @retry="load"/>
+      <ErrorState v-else-if="error" :description="error"/>
       <EmptyState v-else-if="!rows.length" title="暂无赛果记录" description="当前日期或筛选条件下没有方案数据"/>
       <div v-else class="table-wrap"><table class="archive-table"><thead><tr><th>发单人</th><th>历史战绩</th><th>自购金额</th><th>跟单人数</th><th>中奖金额</th><th>注数</th><th>方案详情 / SP</th><th>赛果</th></tr></thead><tbody><tr v-for="item in rows" :key="item.id"><td><div class="sender"><img v-if="item.avatar_url" :src="item.avatar_url" alt=""><span v-else>{{ avatarText(item.nickname) }}</span><b>{{ item.nickname || "--" }}<small>{{ item.platform_name }} · {{ item.platform_order_id }} · {{ item._date || "日期待同步" }}</small></b></div></td><td><strong class="purple">{{ item.history_record || "--" }}</strong></td><td>¥{{ money(item.stake) }}</td><td>{{ number(item.follow_num) }} 人</td><td>{{ item.result === "待开奖" ? "待开奖" : `¥${money(item.platform_bonus)}` }}</td><td>{{ passText(item) }}</td><td class="details"><div v-for="match in item.matches || []" :key="match.id"><b>{{ match.match_code || "--" }} · {{ match.home || "--" }} VS {{ match.away || "--" }}</b><span>[{{ match.play_type || "--" }}：{{ match.selection || "--" }}]<em>SP {{ match.odds || "--" }}</em></span></div><span v-if="!(item.matches || []).length">比赛明细待同步 · SP {{ item.odds_text || "--" }}</span></td><td><span :class="resultClass(item.result)">{{ resultText(item.result) }}</span></td></tr></tbody></table></div>
     </section>
@@ -78,7 +78,7 @@ async function load() {
     const response = await axios.get("/api/hub/results", { params, timeout: 25000 })
     if (response.data?.code !== 200) throw new Error()
     const data = response.data.data || {}; rows.value = data.rows || []; summary.value = data.summary || {}; dateCounts.value = data.date_counts || []; pages.value = data.pages || 1; total.value = data.total || 0; month.value = data.month || month.value || currentMonth()
-  } catch { rows.value = []; error.value = "赛果数据暂时无法读取，请稍后重试或检查接口连接状态" } finally { loading.value = false }
+  } catch { rows.value = []; error.value = "赛果数据暂时不可用" } finally { loading.value = false }
 }
 
 function localDate(date) { const two = (value) => String(value).padStart(2, "0"); return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}` }

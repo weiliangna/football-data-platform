@@ -5,7 +5,7 @@
       <div class="mobile-toolbar">
         <button type="button" :aria-expanded="sidebarOpen" aria-label="打开菜单" @click="sidebarOpen = true">☰</button>
         <img src="/football-ai-logo.png" alt="绿茵智核足球 AI 标识">
-        <button type="button" aria-label="刷新当前页面" @click="reload">↻</button>
+        <span class="mobile-toolbar-spacer" aria-hidden="true"></span>
       </div>
       <RouterView />
     </main>
@@ -35,7 +35,6 @@ async function loadPlatforms() {
   }
 }
 
-function reload() { window.location.reload() }
 function handleEscape(event) { if (event.key === "Escape") sidebarOpen.value = false }
 
 watch(() => route.fullPath, () => { sidebarOpen.value = false })

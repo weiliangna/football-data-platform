@@ -2,13 +2,13 @@
   <section class="page-shell scpai-dashboard">
     <header class="scpai-report-head">
       <div><span class="scpai-kicker">FOOTBALL MARKET MONITOR</span><h1>绿茵智核水位实时看板</h1><p>赛前盘口变化、多市场同步监测与真实水位曲线</p></div>
-      <div class="scpai-report-actions"><span :class="['scpai-live-pill',dashboard.status]">{{ statusText }}</span><button type="button" :disabled="dashboardRefreshing" @click="refreshPage">{{ dashboardRefreshing ? "更新中" : "刷新看板" }}</button></div>
+      <div class="scpai-report-actions"><span :class="['scpai-live-pill',dashboard.status]">{{ dashboardRefreshing ? "数据同步中" : statusText }}</span></div>
     </header>
 
     <nav class="scpai-page-tabs" aria-label="赛事数据二级导航"><router-link to="/match-data">水位看板</router-link><router-link to="/match-news">比赛新闻</router-link></nav>
 
     <LoadingSkeleton v-if="dashboardLoading" class="scpai-section-gap" type="cards" :count="4" />
-    <ErrorState v-else-if="dashboardError && !matches.length" class="app-card scpai-section-gap" :description="dashboardError" @retry="refreshPage" />
+    <ErrorState v-else-if="dashboardError && !matches.length" class="app-card scpai-section-gap" :description="dashboardError" />
     <template v-else>
       <section class="scpai-summary-grid">
         <article v-for="item in summaryCards" :key="item.label" :class="item.tone"><span>{{ item.label }}</span><b>{{ number(item.value) }}</b><small>{{ item.note }}</small></article>
@@ -32,7 +32,7 @@
 
         <article class="scpai-detail-panel">
           <LoadingSkeleton v-if="detailLoading && !selectedMatch.externalId" type="cards" :count="3" />
-          <ErrorState v-else-if="detailError && !selectedMatch.externalId" :description="detailError" @retry="loadSelected" />
+          <ErrorState v-else-if="detailError && !selectedMatch.externalId" :description="detailError" />
           <template v-else-if="selectedMatch.externalId">
             <header class="scpai-detail-top">
               <div class="scpai-detail-identity"><span>{{ selectedMatch.code || "比赛" }}</span><h2>{{ selectedMatch.home || "主队" }} <em>VS</em> {{ selectedMatch.away || "客队" }}</h2><p>{{ selectedMatch.competition || "赛事待同步" }} · {{ formatTime(selectedMatch.kickoffAt || selectedMatch.kickoff) }}</p></div>

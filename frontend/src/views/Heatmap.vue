@@ -15,7 +15,7 @@
     </section>
 
     <LoadingSkeleton v-if="loading" type="cards" :count="4" />
-    <ErrorState v-else-if="error" class="app-card section-gap" :description="error" @retry="load" />
+    <ErrorState v-else-if="error" class="app-card section-gap" :description="error" />
     <template v-else>
       <section class="focus-card app-card section-gap">
         <header class="section-header"><div><span class="eyebrow">Center picks · {{ playType }}</span><h2>各玩法重心分析</h2></div><p>按方案出现次数排序</p></header>
@@ -77,7 +77,7 @@ async function load() {
   } catch {
     if (initialLoad) {
       data.value = {}
-      error.value = "热力数据暂时无法读取，请稍后重试"
+      error.value = "热力数据暂时不可用"
     }
   } finally { loading.value = false; requestInFlight = false }
 }

@@ -29,6 +29,8 @@ from common.platform_registry import (
     ACTIVE_PLATFORM_IDS,
     default_platform_metadata,
 )
+from common.user_grading import load_user_grades
+from common.user_labels import build_first_order_profile
 from database.mysql import get_conn
 
 
@@ -1262,6 +1264,8 @@ def enrich_order(
         "result": order.get("result") or "待开奖",
         "profit": money(order.get("profit")),
         "bonus": money(order.get("platform_bonus")),
+        "expected_bonus": money(order.get("expected_bonus")),
+        "lot_multi": money(order.get("lot_multi")),
         "deadline_time": deadline_state["deadline_time"],
         "deadline_source": deadline_state["deadline_source"],
         "deadline_exact": bool(deadline_state["deadline_exact"]),
@@ -1453,15 +1457,17 @@ def load_recent_user_metrics(cursor, user_keys):
         SELECT
             o.platform_id,
             o.user_id,
-            COUNT(*) AS orders7d,
-            IFNULL(SUM(o.stake),0) AS self_buy7d,
-            IFNULL(SUM(o.follow_num),0) AS followers7d,
-            IFNULL(SUM(CASE WHEN o.result<>'待开奖' THEN o.profit ELSE 0 END),0) AS profit7d
+            SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_SUB(NOW(),INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS orders7d,
+            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_SUB(NOW(),INTERVAL 7 DAY) THEN o.stake ELSE 0 END),0) AS self_buy7d,
+            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_SUB(NOW(),INTERVAL 7 DAY) THEN o.follow_num ELSE 0 END),0) AS followers7d,
+            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_SUB(NOW(),INTERVAL 7 DAY) AND o.result<>'待开奖' THEN o.profit ELSE 0 END),0) AS profit7d,
+            SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=CURDATE() THEN 1 ELSE 0 END) AS today_orders,
+            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=CURDATE() THEN o.follow_num ELSE 0 END),0) AS today_followers,
+            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_FORMAT(CURDATE(),'%Y-%m-01') AND o.result<>'待开奖' THEN o.stake ELSE 0 END),0) AS month_stake,
+            IFNULL(SUM(CASE WHEN COALESCE(o.publish_time,o.created_time)>=DATE_FORMAT(CURDATE(),'%Y-%m-01') AND o.result<>'待开奖' THEN o.profit ELSE 0 END),0) AS month_profit
         FROM orders o
         WHERE ({pair_sql})
-          AND DATE(DATE_SUB(COALESCE(o.publish_time,o.created_time),INTERVAL 6 HOUR))
-              BETWEEN DATE_SUB(DATE(DATE_SUB(NOW(),INTERVAL 6 HOUR)),INTERVAL 6 DAY)
-                  AND DATE(DATE_SUB(NOW(),INTERVAL 6 HOUR))
+          AND COALESCE(o.publish_time,o.created_time)<=NOW()
         GROUP BY o.platform_id,o.user_id
         """,
         tuple(pair_params),
@@ -1481,7 +1487,7 @@ def load_recent_user_metrics(cursor, user_keys):
                     ORDER BY o.id DESC SEPARATOR ','
                 ),
                 ',',
-                5
+                10
             ) AS recent_results
         FROM orders o
         WHERE ({pair_sql})
@@ -1492,11 +1498,75 @@ def load_recent_user_metrics(cursor, user_keys):
     for row in cursor.fetchall() or []:
         key = (intv(row.get("platform_id")), intv(row.get("user_id")))
         metric = metrics.setdefault(key, {})
-        metric["recent5"] = [
+        metric["recent10"] = [
             value
             for value in str(row.get("recent_results") or "").split(",")
             if value in {"赢", "输"}
-        ][:5]
+        ][:10]
+        metric["recent5"] = metric["recent10"][:5]
+
+    cursor.execute(
+        f"""
+        SELECT o.platform_id,o.user_id,om.play_type,COUNT(DISTINCT o.id) AS play_orders
+        FROM orders o
+        INNER JOIN order_matches om ON om.order_id=o.id
+        WHERE ({pair_sql})
+          AND om.play_type IS NOT NULL
+          AND om.play_type<>''
+        GROUP BY o.platform_id,o.user_id,om.play_type
+        ORDER BY o.platform_id,o.user_id,play_orders DESC,om.play_type
+        """,
+        tuple(pair_params),
+    )
+    for row in cursor.fetchall() or []:
+        key = (intv(row.get("platform_id")), intv(row.get("user_id")))
+        metric = metrics.setdefault(key, {})
+        if not metric.get("favorite_play"):
+            metric["favorite_play"] = row.get("play_type") or ""
+
+    cursor.execute(
+        f"""
+        SELECT
+            o.platform_id,
+            o.user_id,
+            COUNT(*) AS lifetime_orders,
+            MIN(COALESCE(o.publish_time,o.created_time)) AS first_order_time,
+            SUBSTRING_INDEX(
+                GROUP_CONCAT(
+                    CAST(o.stake AS CHAR)
+                    ORDER BY COALESCE(o.publish_time,o.created_time),o.id
+                    SEPARATOR ','
+                ),
+                ',',
+                1
+            ) AS first_order_amount
+        FROM orders o
+        WHERE ({pair_sql})
+          AND o.stake IS NOT NULL
+          AND o.stake>0
+        GROUP BY o.platform_id,o.user_id
+        """,
+        tuple(pair_params),
+    )
+    for row in cursor.fetchall() or []:
+        key = (intv(row.get("platform_id")), intv(row.get("user_id")))
+        metric = metrics.setdefault(key, {})
+        metric.update(
+            build_first_order_profile(
+                row.get("first_order_amount"),
+                row.get("first_order_time"),
+                intv(row.get("lifetime_orders")),
+                history_complete=False,
+            )
+        )
+
+    for metric in metrics.values():
+        month_stake = money(metric.get("month_stake"))
+        metric["month_roi"] = (
+            round(money(metric.get("month_profit")) / month_stake * 100, 2)
+            if month_stake > 0
+            else None
+        )
     return metrics
 
 
@@ -1907,13 +1977,13 @@ def user_detail(platform_id: int, user_id: int):
             FROM orders o
             WHERE o.platform_id=%s AND o.user_id=%s
             ORDER BY o.id DESC
-            LIMIT 100
+            LIMIT 20
             """,
             (platform_id, user_id)
         )
         orders = cursor.fetchall()
 
-        grouped = load_hot_play_matches(
+        grouped = load_order_matches(
             cursor,
             [intv(order.get("id")) for order in orders]
         )
@@ -1921,6 +1991,15 @@ def user_detail(platform_id: int, user_id: int):
             cursor,
             [(platform_id, user_id)],
         ).get((platform_id, user_id), {})
+        grade = next(
+            (
+                item
+                for item in load_user_grades(cursor)
+                if intv(item.get("platform_id")) == platform_id
+                and intv(item.get("user_id")) == user_id
+            ),
+            {},
+        )
 
         data_orders = [
             enrich_order(
@@ -1965,11 +2044,28 @@ def user_detail(platform_id: int, user_id: int):
                     "roi": money(stat.get("roi")),
                     "follow_num": intv(stat.get("follow_num")),
                     "expert_score": money(stat.get("expert_score")),
+                    "grade": grade.get("grade") or "B",
+                    "auto_grade": grade.get("auto_grade") or "B",
+                    "manual_grade": grade.get("manual_grade") or "",
+                    "grade_score": intv(grade.get("score")),
+                    "score_detail": grade.get("score_detail") or {},
+                    "grade_reasons": grade.get("grade_reasons") or {},
                     "self_buy7d": money(recent.get("self_buy7d")),
                     "orders7d": intv(recent.get("orders7d")),
                     "followers7d": intv(recent.get("followers7d")),
                     "profit7d": money(recent.get("profit7d")),
                     "recent5": recent.get("recent5") or [],
+                    "recent10": recent.get("recent10") or [],
+                    "month_roi": recent.get("month_roi"),
+                    "today_orders": intv(recent.get("today_orders")),
+                    "today_followers": intv(recent.get("today_followers")),
+                    "current_streak": intv(stat.get("current_streak")),
+                    "max_win_streak": intv(stat.get("max_win_streak")),
+                    "favorite_play": recent.get("favorite_play") or "",
+                    "first_order_amount": recent.get("first_order_amount"),
+                    "first_order_time": recent.get("first_order_time"),
+                    "first_order_confidence": recent.get("first_order_confidence") or "suspected",
+                    "auto_tags": recent.get("auto_tags") or [],
                 },
                 "orders": data_orders,
             },
@@ -2246,6 +2342,13 @@ def users(
     platform_id: int = 0,
     keyword: str = "",
     sort: str = "score",
+    real_profit: str = "all",
+    favorite_play: str = "",
+    min_streak: int = 0,
+    recent_form: str = "all",
+    min_hit_rate: float = 0,
+    min_roi: float = -999999,
+    first_order_tag: str = "",
     page: int = 1,
     page_size: int = 30,
 ):
@@ -2280,18 +2383,101 @@ def users(
             where.append("us.platform_id=%s")
             params.append(platform_id)
 
-        keyword = str(keyword or "").strip()
-        if keyword:
-            like = "%" + keyword + "%"
+        if real_profit == "profit":
+            where.append("us.total_profit>0")
+        elif real_profit == "profit_5000":
+            where.append("us.total_profit>=5000")
+        elif real_profit == "profit_10000":
+            where.append("us.total_profit>=10000")
+        elif real_profit == "loss":
+            where.append("us.total_profit<0")
+
+        if min_streak > 0:
+            where.append("us.current_streak>=%s")
+            params.append(min_streak)
+
+        if recent_form == "latest_win":
+            where.append("us.recent_results LIKE '赢%'")
+        elif recent_form == "last3_win":
+            where.append("us.recent_results LIKE '赢,赢,赢%'")
+        elif recent_form == "latest_loss":
+            where.append("us.recent_results LIKE '输%'")
+
+        if min_hit_rate > 0:
+            where.append("us.hit_rate>=%s")
+            params.append(min_hit_rate)
+
+        if min_roi > -999999:
+            where.append("us.roi>=%s")
+            params.append(min_roi)
+
+        favorite_play = str(favorite_play or "").strip()
+        if favorite_play:
             where.append(
                 """
-                (
-                    us.nickname LIKE %s
-                    OR CAST(us.user_id AS CHAR) LIKE %s
+                EXISTS (
+                    SELECT 1
+                    FROM orders play_order
+                    INNER JOIN order_matches play_match
+                        ON play_match.order_id=play_order.id
+                    WHERE play_order.platform_id=us.platform_id
+                      AND play_order.user_id=us.user_id
+                      AND play_match.play_type=%s
                 )
                 """
             )
-            params.extend([like, like])
+            params.append(favorite_play)
+
+        first_order_tag = str(first_order_tag or "").strip()
+        first_amount_rules = {
+            "NEW_FIRST_ORDER_100": "=100",
+            "NEW_FIRST_ORDER_200": "=200",
+            "NEW_FIRST_ORDER_LOW_AMOUNT": "<=200",
+            "SUSPECTED_FIRST_ORDER_100": "=100",
+            "SUSPECTED_FIRST_ORDER_200": "=200",
+        }
+        if first_order_tag in first_amount_rules:
+            where.append(
+                f"""
+                (
+                    SELECT first_order.stake
+                    FROM orders first_order
+                    WHERE first_order.platform_id=us.platform_id
+                      AND first_order.user_id=us.user_id
+                      AND first_order.stake>0
+                    ORDER BY COALESCE(first_order.publish_time,first_order.created_time),first_order.id
+                    LIMIT 1
+                ) {first_amount_rules[first_order_tag]}
+                """
+            )
+        elif first_order_tag == "NEW_ACCOUNT_OBSERVE":
+            where.append(
+                """
+                (SELECT COUNT(*) FROM orders observed_order
+                 WHERE observed_order.platform_id=us.platform_id
+                   AND observed_order.user_id=us.user_id
+                   AND observed_order.stake>0) BETWEEN 1 AND 3
+                """
+            )
+            where.append(
+                """
+                (SELECT MIN(COALESCE(observed_order.publish_time,observed_order.created_time))
+                 FROM orders observed_order
+                 WHERE observed_order.platform_id=us.platform_id
+                   AND observed_order.user_id=us.user_id
+                   AND observed_order.stake>0)
+                BETWEEN DATE_SUB(NOW(),INTERVAL 7 DAY) AND NOW()
+                """
+            )
+
+        keyword = str(keyword or "").strip()
+        if keyword:
+            if keyword.isdigit():
+                where.append("us.user_id=%s")
+                params.append(int(keyword))
+            else:
+                where.append("us.nickname LIKE %s")
+                params.append("%" + keyword + "%")
 
         where_sql = " AND ".join(where)
 
@@ -2330,6 +2516,10 @@ def users(
                 for row in fetched_rows
             ],
         )
+        grades = {
+            (intv(item.get("platform_id")), intv(item.get("user_id"))): item
+            for item in load_user_grades(cursor)
+        }
         rows = []
 
         for index, row in enumerate(
@@ -2339,6 +2529,7 @@ def users(
             pid = intv(row.get("platform_id"))
             uid = intv(row.get("user_id"))
             recent = recent_metrics.get((pid, uid), {})
+            grade = grades.get((pid, uid), {})
             rows.append(
                 {
                     "rank": index,
@@ -2358,11 +2549,28 @@ def users(
                     "roi": money(row.get("roi")),
                     "follow_num": intv(row.get("follow_num")),
                     "expert_score": money(row.get("expert_score")),
+                    "grade": grade.get("grade") or "B",
+                    "auto_grade": grade.get("auto_grade") or "B",
+                    "grade_score": intv(grade.get("score")),
                     "self_buy7d": money(recent.get("self_buy7d")),
                     "orders7d": intv(recent.get("orders7d")),
                     "followers7d": intv(recent.get("followers7d")),
                     "profit7d": money(recent.get("profit7d")),
                     "recent5": recent.get("recent5") or [],
+                    "recent10": recent.get("recent10") or [],
+                    "history_record": (
+                        f"{intv(row.get('win_orders'))}胜{intv(row.get('lose_orders'))}负"
+                    ),
+                    "current_streak": intv(row.get("current_streak")),
+                    "month_roi": recent.get("month_roi"),
+                    "today_orders": intv(recent.get("today_orders")),
+                    "today_followers": intv(recent.get("today_followers")),
+                    "follow_amount": None,
+                    "favorite_play": recent.get("favorite_play") or "",
+                    "first_order_amount": recent.get("first_order_amount"),
+                    "first_order_time": recent.get("first_order_time"),
+                    "first_order_confidence": recent.get("first_order_confidence") or "suspected",
+                    "auto_tags": recent.get("auto_tags") or [],
                 }
             )
 

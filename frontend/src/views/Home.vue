@@ -7,12 +7,11 @@
       </div>
       <div class="page-actions">
         <span class="page-time">{{ currentDate }} {{ currentTime }}</span>
-        <button class="primary-button" type="button" @click="load">刷新</button>
       </div>
     </header>
 
     <LoadingSkeleton v-if="loading" type="cards" :count="4" />
-    <ErrorState v-else-if="error" class="app-card" :description="error" @retry="load" />
+    <ErrorState v-else-if="error" class="app-card" :description="error" />
     <template v-else>
       <section class="overview-analysis">
         <aside class="overview-metrics">
@@ -184,7 +183,7 @@ async function load() {
   } catch {
     if (initialLoad) {
       data.value = {}
-      error.value = "实时数据暂时无法读取，请稍后重试或检查接口连接状态"
+      error.value = "实时数据暂时不可用"
     }
   } finally {
     loading.value = false

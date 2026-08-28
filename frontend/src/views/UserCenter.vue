@@ -1,105 +1,131 @@
 <template>
-  <section class="page-shell">
-    <header class="page-header">
-      <div><h1>用户中心</h1><p>跨平台发单用户表现与近七日真实统计</p></div>
-      <button class="primary-button" type="button" :disabled="loading" @click="load">{{ loading ? "加载中" : "刷新" }}</button>
+  <section class="page-shell user-directory">
+    <header class="directory-hero">
+      <div><span class="eyebrow">USER DIRECTORY</span><h1>用户池</h1><p>跨平台真实发单用户、历史表现与近期行为</p></div>
+      <div class="directory-summary"><div><small>当前结果</small><strong>{{ number(total) }}</strong></div><div><small>本页活跃</small><strong>{{ number(users.length) }}</strong></div><div><small>已关注</small><strong>{{ number(followedCount) }}</strong></div></div>
     </header>
 
-    <section class="toolbar app-card section-gap">
-      <select v-model="platform" aria-label="平台" @change="resetLoad"><option value="">全部平台</option><option v-for="item in platforms" :key="item.platform_id" :value="String(item.platform_id)">{{ item.name }}</option></select>
-      <input v-model.trim="keyword" class="search" placeholder="用户名 / 用户 ID" @keyup.enter="resetLoad">
-      <select v-model="sort" aria-label="排序" @change="resetLoad"><option value="score">综合分</option><option value="orders">累计发单</option><option value="hit">命中率</option><option value="profit">累计盈利</option><option value="roi">ROI</option><option value="follow">累计跟单</option></select>
-      <button class="primary-button" type="button" @click="resetLoad">查询</button>
+    <section class="filter-card app-card section-gap">
+      <button class="filter-heading" type="button" :aria-expanded="filtersOpen" @click="filtersOpen=!filtersOpen"><span>◎</span><b>筛选条件</b><em>{{ activeFilterCount ? `${activeFilterCount} 项生效` : "不限" }}</em><i>{{ filtersOpen ? "⌃" : "⌄" }}</i></button>
+      <div v-show="filtersOpen" class="filter-grid">
+        <div class="filter-search"><label>平台与用户</label><div><select v-model="platform" aria-label="平台" @change="applyFilters"><option value="">全部平台</option><option v-for="item in platforms" :key="item.platform_id" :value="String(item.platform_id)">{{ item.name }}</option></select><input v-model.trim="keyword" placeholder="用户名 / 用户 ID" aria-label="搜索用户"></div></div>
+        <FilterGroup title="真实盈利" :items="profitOptions" v-model="filters.real_profit" @change="applyFilters" />
+        <FilterGroup title="擅长玩法" :items="playOptions" v-model="filters.favorite_play" @change="applyFilters" />
+        <FilterGroup title="当前连红" :items="streakOptions" v-model="filters.min_streak" @change="applyFilters" />
+        <FilterGroup title="近期红黑" :items="recentOptions" v-model="filters.recent_form" @change="applyFilters" />
+        <FilterGroup title="历史命中率" :items="hitOptions" v-model="filters.min_hit_rate" @change="applyFilters" />
+        <FilterGroup title="历史回报率" :items="roiOptions" v-model="filters.min_roi" @change="applyFilters" />
+        <FilterGroup class="wide-filter" title="新号首单标签" :items="firstOrderOptions" v-model="filters.first_order_tag" @change="applyFilters" />
+      </div>
     </section>
 
     <section class="users-card app-card section-gap">
-      <LoadingSkeleton v-if="loading" :count="8" />
-      <ErrorState v-else-if="error" :description="error" @retry="load" />
+      <div class="table-meta"><span>共 {{ number(total) }} 位用户 · 当前 {{ (page-1)*pageSize+1 }}-{{ Math.min(page*pageSize,total) }}</span><small>点击用户行查看完整历史方案</small></div>
+      <LoadingSkeleton v-if="loading && !users.length" :count="8" />
+      <ErrorState v-else-if="error && !users.length" :description="error" />
       <EmptyState v-else-if="!users.length" title="暂无用户" description="当前筛选条件下没有用户数据" />
       <div v-else class="table-wrap">
         <table class="data-table users-table">
-          <thead><tr><th>排名</th><th>用户</th><th>平台</th><th>评分</th><th>7日自购</th><th>7日跟单</th><th>7日发单</th><th>7日盈利</th><th>命中率</th><th>近期战绩</th></tr></thead>
+          <thead><tr><th>用户名</th><th>平台</th><th>近10场黑红</th><th>历史战绩</th><th>连红次数</th><th>月回报</th><th>今日发单</th><th>跟单人数</th><th>跟单总额</th><th>关注</th></tr></thead>
           <tbody>
             <tr v-for="item in users" :key="`${item.platform_id}-${item.user_id}`" tabindex="0" @click="openUser(item)" @keyup.enter="openUser(item)">
-              <td><span class="rank" :class="{ first: item.rank === 1 }">{{ item.rank }}</span></td>
-              <td><div class="user-name"><img v-if="item.avatar_url" class="avatar" :src="item.avatar_url" alt=""><span v-else class="avatar-fallback">{{ avatarText(item.nickname) }}</span><span><b>{{ item.nickname || "--" }}</b><small>ID {{ item.user_id || "--" }}</small></span></div></td>
-              <td>{{ item.platform_name || "--" }}</td>
-              <td><strong>{{ fixed(item.expert_score) }}</strong></td>
-              <td>¥{{ money(item.self_buy7d) }}</td>
-              <td>{{ number(item.followers7d) }}</td>
-              <td>{{ number(item.orders7d) }}</td>
-              <td :class="Number(item.profit7d) >= 0 ? 'money-positive' : 'money-negative'">{{ profit(item.profit7d) }}</td>
-              <td>{{ percent(item.hit_rate) }}</td>
-              <td><div v-if="item.recent5?.length" class="recent-results"><i v-for="(result, index) in item.recent5" :key="index" :class="result === '赢' ? 'win' : 'loss'">{{ result }}</i></div><span v-else>--</span></td>
+              <td><div class="user-name"><img v-if="item.avatar_url" class="avatar" :src="item.avatar_url" alt=""><span v-else class="avatar avatar-fallback">{{ avatarText(item.nickname) }}</span><span><b>{{ item.nickname || "--" }} <em :class="`grade-${item.grade||'B'}`">{{ item.grade || "B" }}</em></b><small>ID {{ item.user_id || "--" }}<i v-for="tag in visibleTags(item.auto_tags)" :key="tag">{{ tag }}</i></small></span></div></td>
+              <td><span class="platform-dot" :style="platformStyle(item.platform_id)"><i></i>{{ item.platform_name || "--" }}</span></td>
+              <td><div v-if="item.recent10?.length" class="recent-results" :title="`近5场：${(item.recent5||[]).join(' / ')||'暂无'}`"><i v-for="(result,index) in item.recent10" :key="index" :class="result==='赢'?'win':'loss'">{{ result==='赢'?'红':'黑' }}</i></div><span v-else>--</span></td>
+              <td><strong>{{ item.history_record || "--" }}</strong><small class="subvalue">命中 {{ percent(item.hit_rate) }} · 7日自购 ¥{{ money(item.self_buy7d) }}</small></td>
+              <td>{{ number(item.current_streak) }}</td>
+              <td :class="Number(item.month_roi)>=0?'money-positive':'money-negative'">{{ item.month_roi===null||item.month_roi===undefined?'--':percent(item.month_roi) }}</td>
+              <td>{{ number(item.today_orders) }} 单<small class="subvalue">7日 {{ number(item.orders7d) }} 单</small></td>
+              <td>{{ number(item.today_followers) }} 人</td>
+              <td>{{ item.follow_amount===null||item.follow_amount===undefined?'--':`¥${money(item.follow_amount)}` }}</td>
+              <td><button class="follow-button" :class="{active:isFollowed(item)}" type="button" @click.stop="toggleFollow(item)">{{ isFollowed(item)?"★ 已关注":"☆ 关注" }}</button></td>
             </tr>
           </tbody>
         </table>
       </div>
+      <div v-if="loading && users.length" class="updating-line">正在同步最新用户指标…</div>
     </section>
     <AppPagination :page="page" :pages="pages" :disabled="loading" @change="changePage" />
+
+    <div v-if="modalOpen" class="modal-backdrop" @mousedown.self="closeModal">
+      <section class="user-modal" role="dialog" aria-modal="true" :aria-label="`${selectedUser.nickname||'用户'}详情`">
+        <header class="modal-titlebar"><div><strong>{{ selectedUser.nickname || "用户详情" }}</strong><span>{{ selectedUser.platform_name || "--" }} · 用户详情</span></div><button type="button" aria-label="关闭" @click="closeModal">×</button></header>
+        <LoadingSkeleton v-if="detailLoading" :count="6" />
+        <ErrorState v-else-if="detailError" :description="detailError" />
+        <template v-else>
+          <section class="modal-profile">
+            <div class="profile-identity"><img v-if="detailUser.avatar_url" :src="detailUser.avatar_url" alt=""><span v-else class="avatar-fallback">{{ avatarText(detailUser.nickname) }}</span><div><small>{{ detailUser.platform_name || "--" }}</small><h2>{{ detailUser.nickname || "--" }}</h2><p>ID {{ detailUser.user_id || "--" }}</p></div><button class="follow-button" :class="{active:isFollowed(detailUser)}" type="button" @click="toggleFollow(detailUser)">{{ isFollowed(detailUser)?"★ 已关注":"☆ 关注" }}</button></div>
+            <div class="profile-form"><span>全部订单 · 近10单</span><div class="recent-results"><i v-for="(result,index) in detailUser.recent10||[]" :key="index" :class="result==='赢'?'win':'loss'">{{ result==='赢'?'红':'黑' }}</i></div><strong>{{ detailUser.win_orders || 0 }}中{{ detailUser.lose_orders || 0 }}未中</strong></div>
+          </section>
+          <section class="modal-kpis"><article><span>等级 / 综合分</span><strong>{{ detailUser.grade || "B" }} · {{ number(detailUser.grade_score) }}</strong></article><article><span>连红</span><strong>{{ number(detailUser.current_streak) }}</strong></article><article><span>月回报</span><strong>{{ detailUser.month_roi===null||detailUser.month_roi===undefined?'--':percent(detailUser.month_roi) }}</strong></article><article><span>累计方案</span><strong>{{ number(detailUser.total_orders) }}</strong></article><article><span>跟单人数</span><strong>{{ number(detailUser.follow_num) }}</strong></article><article><span>累计奖金</span><strong>¥{{ money(totalPrize(detailUser)) }}</strong></article></section>
+          <details class="grade-breakdown"><summary>评级详情 · 自动 {{ detailUser.auto_grade || "B" }}<span v-if="detailUser.manual_grade"> · 人工 {{ detailUser.manual_grade }}</span></summary><div><span v-for="item in gradeDetails(detailUser.score_detail)" :key="item.label"><small>{{ item.label }}</small><b>{{ item.value }}</b></span></div></details>
+          <section class="history-panel"><div class="history-heading"><h3>已入库历史 · 玩法明细</h3><span>{{ detailOrders.length }} 张方案 · 按发单时间倒序</span></div><div v-if="!detailOrders.length" class="modal-empty">暂无历史方案</div><div v-else class="history-scroll"><table class="history-table"><thead><tr><th>发单时间</th><th>场次</th><th>比赛队伍</th><th>玩法</th><th>投注项</th><th>SP赔率</th><th>赛果</th><th>过关玩法</th><th>预计回报</th><th>投注倍数</th><th>自购金额</th><th>跟单人数</th><th>订单结果</th></tr></thead><tbody><tr v-for="order in detailOrders" :key="order.id"><td><b>{{ dateTime(order.publish_time) }}</b><small>{{ order.platform_order_id }}</small></td><td><div v-for="match in order.matches||[]" :key="`code-${match.id}`">{{ match.match_code || "--" }}</div></td><td><div v-for="match in order.matches||[]" :key="`teams-${match.id}`"><b>{{ match.home || "--" }} VS {{ match.away || "--" }}</b></div><span v-if="!(order.matches||[]).length">比赛明细待同步</span></td><td><div v-for="match in order.matches||[]" :key="`play-${match.id}`">{{ match.play_type || "--" }}</div></td><td><div v-for="match in order.matches||[]" :key="`pick-${match.id}`" :class="{hit:match.result==='赢'||order.result==='赢'}">{{ match.selection || "--" }}</div></td><td><div v-for="match in order.matches||[]" :key="`sp-${match.id}`">{{ match.odds || "--" }}</div><span v-if="!(order.matches||[]).length">{{ order.odds_text || "--" }}</span></td><td><div v-for="match in order.matches||[]" :key="`result-${match.id}`" :class="{hit:match.result==='赢'||order.result==='赢'}">{{ matchResult(match) }}</div></td><td>{{ order.pass_composition || order.pass_summary || "--" }}</td><td>{{ order.expected_bonus?`¥${money(order.expected_bonus)}`:"--" }}</td><td>{{ order.lot_multi?`${number(order.lot_multi)} 倍`:"--" }}</td><td>¥{{ money(order.stake) }}</td><td>{{ number(order.follow_num) }} 人</td><td :class="{hit:order.result==='赢'}">{{ orderResult(order) }}</td></tr></tbody></table></div></section>
+        </template>
+      </section>
+    </div>
   </section>
 </template>
 
 <script setup>
-import { onMounted, ref } from "vue"
-import { useRouter } from "vue-router"
+import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import axios from "axios"
 import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue"
 import EmptyState from "../components/ui/EmptyState.vue"
 import ErrorState from "../components/ui/ErrorState.vue"
 import AppPagination from "../components/ui/AppPagination.vue"
 
-const router = useRouter()
-const platform = ref("")
-const keyword = ref("")
-const sort = ref("score")
-const users = ref([])
-const platforms = ref([])
-const page = ref(1)
-const pages = ref(1)
-const total = ref(0)
-const loading = ref(true)
-const error = ref("")
+const FilterGroup=defineComponent({props:{title:String,items:Array,modelValue:[String,Number]},emits:["update:modelValue","change"],setup(props,{emit}){return()=>h("div",{class:"filter-group"},[h("label",props.title),h("div",props.items.map(item=>h("button",{type:"button",class:{active:String(props.modelValue)===String(item.value)},onClick:()=>{emit("update:modelValue",item.value);emit("change")}},item.label)))])}})
+const platform=ref("")
+const keyword=ref("")
+const filtersOpen=ref(true)
+const filters=ref({real_profit:"all",favorite_play:"",min_streak:0,recent_form:"all",min_hit_rate:0,min_roi:-999999,first_order_tag:""})
+const users=ref([]),platforms=ref([]),page=ref(1),pages=ref(1),total=ref(0),loading=ref(true),error=ref("")
+const modalOpen=ref(false),selectedUser=ref({}),detailUser=ref({}),detailOrders=ref([]),detailLoading=ref(false),detailError=ref("")
+const followed=ref(new Set())
+const pageSize=30
+let requestController=null,detailController=null,searchTimer=null
 
-async function loadPlatforms() {
-  try {
-    const response = await axios.get("/api/platform/list", { timeout: 25000 })
-    platforms.value = Array.isArray(response.data?.data) ? response.data.data : []
-  } catch { platforms.value = [] }
-}
+const profitOptions=[{label:"不限",value:"all"},{label:"已盈利",value:"profit"},{label:"≥ ¥5千",value:"profit_5000"},{label:"≥ ¥1万",value:"profit_10000"},{label:"净亏损",value:"loss"}]
+const playOptions=[{label:"全部玩法",value:""},{label:"胜平负",value:"胜平负"},{label:"让球胜平负",value:"让球胜平负"},{label:"总进球",value:"总进球"},{label:"半全场",value:"半全场"},{label:"比分",value:"比分"}]
+const streakOptions=[{label:"不限",value:0},{label:"≥ 2连红",value:2},{label:"≥ 3连红",value:3},{label:"≥ 5连红",value:5}]
+const recentOptions=[{label:"不限",value:"all"},{label:"最新红",value:"latest_win"},{label:"近3单全红",value:"last3_win"},{label:"最新黑",value:"latest_loss"}]
+const hitOptions=[{label:"不限",value:0},{label:"≥ 50%",value:50},{label:"≥ 60%",value:60},{label:"≥ 70%",value:70}]
+const roiOptions=[{label:"不限",value:-999999},{label:"≥ 0%",value:0},{label:"≥ 50%",value:50},{label:"≥ 100%",value:100}]
+const firstOrderOptions=[{label:"不限",value:""},{label:"疑似首发100",value:"SUSPECTED_FIRST_ORDER_100"},{label:"疑似首发200",value:"SUSPECTED_FIRST_ORDER_200"},{label:"新号观察",value:"NEW_ACCOUNT_OBSERVE"}]
+const activeFilterCount=computed(()=>Object.entries(filters.value).filter(([key,value])=>!(["real_profit","recent_form"].includes(key)?value==="all":key==="min_roi"?Number(value)===-999999:!value)).length+(platform.value?1:0)+(keyword.value?1:0))
+const followedCount=computed(()=>followed.value.size)
 
-async function load() {
-  loading.value = true
-  error.value = ""
-  const params = { keyword: keyword.value, sort: sort.value, page: page.value, page_size: 30 }
-  if (platform.value) params.platform_id = Number(platform.value)
-  try {
-    const response = await axios.get("/api/portal/users", { params, timeout: 25000 })
-    if (response.data?.code !== 200) throw new Error()
-    users.value = response.data.data || []
-    page.value = response.data.page || 1
-    pages.value = response.data.pages || 1
-    total.value = response.data.total || 0
-  } catch {
-    users.value = []
-    total.value = 0
-    error.value = "用户数据暂时无法读取，请稍后重试或检查接口连接状态"
-  } finally { loading.value = false }
-}
+async function loadPlatforms(){try{const response=await axios.get("/api/platform/list",{timeout:12000});platforms.value=Array.isArray(response.data?.data)?response.data.data:[]}catch{platforms.value=[]}}
+async function load(){if(requestController)requestController.abort();requestController=new AbortController();const initial=!users.value.length;loading.value=true;error.value="";const params={platform_id:platform.value?Number(platform.value):0,keyword:keyword.value,page:page.value,page_size:pageSize,...filters.value};try{const response=await axios.get("/api/portal/users",{params,signal:requestController.signal,timeout:15000});if(response.data?.code!==200)throw new Error(response.data?.msg||"request failed");users.value=response.data.data||[];page.value=response.data.page||1;pages.value=response.data.pages||1;total.value=response.data.total||0}catch(err){if(err?.code!=="ERR_CANCELED"){if(initial)users.value=[];error.value="用户数据加载失败，页面其他区域仍可继续使用"}}finally{loading.value=false}}
+function applyFilters(){page.value=1;load()}
+function changePage(value){page.value=value;load();window.scrollTo({top:0,behavior:"smooth"})}
+watch(keyword,()=>{clearTimeout(searchTimer);searchTimer=setTimeout(applyFilters,450)})
 
-function resetLoad() { page.value = 1; load() }
-function changePage(value) { page.value = value; load() }
-function openUser(item) { router.push(`/user/detail/${item.platform_id}/${item.user_id}`) }
-function avatarText(value) { return String(value || "球").slice(-1) }
-function number(value) { return Math.round(Number(value || 0)).toLocaleString("zh-CN") }
-function fixed(value) { return value === null || value === undefined ? "--" : Number(value).toFixed(2) }
-function percent(value) { return value === null || value === undefined ? "--" : `${Number(value).toFixed(2)}%` }
-function money(value) { return Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 2 }) }
-function profit(value) { const amount = Number(value || 0); return `${amount > 0 ? "+¥" : amount < 0 ? "-¥" : "¥"}${money(Math.abs(amount))}` }
+async function openUser(item){selectedUser.value=item;modalOpen.value=true;detailUser.value={...item};detailOrders.value=[];detailError.value="";detailLoading.value=true;document.body.style.overflow="hidden";if(detailController)detailController.abort();detailController=new AbortController();try{const response=await axios.get(`/api/portal/user/${item.platform_id}/${item.user_id}`,{signal:detailController.signal,timeout:15000});if(response.data?.code!==200)throw new Error();detailUser.value=response.data.data?.user||item;detailOrders.value=response.data.data?.orders||[]}catch(err){if(err?.code!=="ERR_CANCELED")detailError.value="用户详情加载失败，请关闭窗口后稍后再试"}finally{detailLoading.value=false}}
+function closeModal(){if(detailController)detailController.abort();modalOpen.value=false;document.body.style.overflow=""}
+function handleKey(event){if(event.key==="Escape"&&modalOpen.value)closeModal()}
+function followKey(item){return `${item.platform_id}:${item.user_id}`}
+function isFollowed(item){return followed.value.has(followKey(item))}
+function toggleFollow(item){const next=new Set(followed.value);const key=followKey(item);next.has(key)?next.delete(key):next.add(key);followed.value=next;localStorage.setItem("football-followed-users",JSON.stringify([...next]))}
+function loadFollowed(){try{const rows=JSON.parse(localStorage.getItem("football-followed-users")||"[]");followed.value=new Set(Array.isArray(rows)?rows:[])}catch{followed.value=new Set()}}
 
-onMounted(() => { loadPlatforms(); load() })
+function visibleTags(tags){const names={NEW_FIRST_ORDER_100:"首发100",NEW_FIRST_ORDER_200:"首发200",NEW_FIRST_ORDER_LOW_AMOUNT:"小额首发",SUSPECTED_FIRST_ORDER_100:"疑似首发100",SUSPECTED_FIRST_ORDER_200:"疑似首发200",NEW_ACCOUNT_OBSERVE:"新号观察"};return (tags||[]).slice(0,2).map(tag=>names[tag]||tag)}
+function platformStyle(id){const colors={1:"#e83e78",2:"#6d5ce7",3:"#2f73e8",4:"#138fa8"};return{color:colors[Number(id)]||"#4d6177"}}
+function avatarText(value){return String(value||"球").slice(-1)}
+function number(value){return Math.round(Number(value||0)).toLocaleString("zh-CN")}
+function percent(value){return `${Number(value||0).toFixed(2)}%`}
+function money(value){return Number(value||0).toLocaleString("zh-CN",{maximumFractionDigits:2})}
+function totalPrize(user){return Number(user?.total_stake||0)+Number(user?.total_profit||0)}
+function gradeDetails(detail){const labels={platform_level:"平台等级",self_purchase_7d:"7日自购",followers_7d:"7日跟单",orders_7d:"7日发单",total_prize:"累计奖金",profit_7d:"7日盈利",hit_rate_7d:"7日命中",recent_5:"近5场"};return Object.entries(detail||{}).map(([key,value])=>({label:labels[key]||key,value:Number(value||0).toFixed(1)}))}
+function dateTime(value){if(!value)return "--";const date=new Date(value);return Number.isNaN(date.getTime())?String(value).replace("T"," ").slice(0,16):date.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false})}
+function matchResult(match){if(match.home_score!==null&&match.home_score!==undefined)return `${match.home_score}:${match.away_score}`;return match.result||"待开奖"}
+function orderResult(order){if(order.result==="赢")return `中奖 ¥${money(order.bonus)}`;if(order.result==="输")return "未中奖";return order.result||"待开奖"}
+
+onMounted(()=>{loadFollowed();loadPlatforms();load();window.addEventListener("keydown",handleKey)})
+onBeforeUnmount(()=>{clearTimeout(searchTimer);requestController?.abort();detailController?.abort();document.body.style.overflow="";window.removeEventListener("keydown",handleKey)})
 </script>
 
 <style scoped>
-.section-gap{margin-top:14px}.toolbar .search{min-width:260px;flex:1}.users-card{overflow:hidden}.users-table{min-width:1080px}.users-table tbody tr{cursor:pointer}.rank{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;background:#f1f1ee;font-size:10px;font-weight:700}.rank.first{background:var(--accent)}.user-name{display:flex;align-items:center;gap:9px;min-width:190px}.user-name>span:last-child{min-width:0}.user-name b,.user-name small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-name b{color:var(--text-main)}.user-name small{margin-top:3px;color:var(--text-muted);font-size:10px}.recent-results{display:flex;gap:4px}.recent-results i{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:9px;font-style:normal;font-weight:750}.recent-results .win{color:var(--success);background:var(--success-soft)}.recent-results .loss{color:var(--danger);background:var(--danger-soft)}@media(max-width:520px){.toolbar>*{width:100%}.toolbar .search{min-width:0}}
+.section-gap{margin-top:14px}.directory-hero{min-height:132px;padding:24px 28px;border-radius:18px;display:flex;align-items:center;justify-content:space-between;gap:24px;color:#fff;background:linear-gradient(112deg,#0c1f38 0%,#12345d 55%,#245b9d 100%);box-shadow:0 18px 38px rgba(20,48,82,.18)}.directory-hero .eyebrow{color:#6fbeff}.directory-hero h1{margin:8px 0 3px;font-size:29px}.directory-hero p{margin:0;color:#cedaeb;font-size:11px}.directory-summary{min-width:390px;border:1px solid rgba(255,255,255,.14);border-radius:14px;display:grid;grid-template-columns:repeat(3,1fr);overflow:hidden;background:rgba(5,24,48,.35)}.directory-summary>div{padding:15px 18px;border-right:1px solid rgba(255,255,255,.12)}.directory-summary>div:last-child{border:0}.directory-summary small,.directory-summary strong{display:block}.directory-summary small{color:#b8c8dc;font-size:9px}.directory-summary strong{margin-top:6px;font-size:20px}.filter-card{overflow:hidden}.filter-heading{width:100%;min-height:56px;padding:0 20px;border:0;display:flex;align-items:center;gap:10px;color:#fff;background:linear-gradient(110deg,#102642,#245c9f);text-align:left}.filter-heading>b{font-size:14px}.filter-heading em{padding:4px 8px;border:1px solid rgba(255,255,255,.18);border-radius:999px;font-size:9px;font-style:normal}.filter-heading i{margin-left:auto;font-style:normal}.filter-grid{display:grid;grid-template-columns:repeat(3,1fr);background:#fff}.filter-group,.filter-search{min-height:86px;padding:13px 17px;border-right:1px solid var(--border);border-bottom:1px solid var(--border)}.filter-group label,.filter-search label{margin-bottom:9px;display:block;color:var(--text-muted);font-size:9px;font-weight:700}.filter-group>div{display:flex;gap:6px;flex-wrap:wrap}.filter-group button{min-height:29px;padding:0 10px;border:1px solid #dce4ed;border-radius:7px;color:#536579;background:#f8fafc;font-size:9px}.filter-group button.active{border-color:#1e6bb5;color:#fff;background:#1768ad;box-shadow:0 5px 11px rgba(23,104,173,.18)}.filter-search>div{display:flex;gap:8px}.filter-search select,.filter-search input{height:32px;padding:0 10px;border:1px solid #dce4ed;border-radius:7px;background:#fff;font-size:10px}.filter-search input{min-width:0;flex:1}.wide-filter{grid-column:span 2}.users-card{overflow:hidden}.table-meta{min-height:42px;padding:0 16px;display:flex;align-items:center;justify-content:space-between;color:var(--text-muted);font-size:10px}.users-table{min-width:1320px}.users-table tbody tr{cursor:pointer}.users-table tbody tr:hover{background:#f6f9fc}.user-name{min-width:200px;display:flex;align-items:center;gap:9px}.avatar{width:34px;height:34px;flex:0 0 34px;border-radius:50%;object-fit:cover}.user-name>span:last-child{min-width:0}.user-name b,.user-name small{display:block}.user-name b{font-size:11px}.user-name b em{margin-left:4px;padding:2px 5px;border-radius:5px;font-size:8px;font-style:normal}.grade-S{color:#7d5200;background:#fff0b7}.grade-A{color:#1768ad;background:#e4f1ff}.grade-B{color:#64748b;background:#edf1f5}.user-name small{margin-top:4px;color:var(--text-muted);font-size:9px}.user-name small i{margin-left:4px;padding:2px 4px;border-radius:4px;color:#1768ad;background:#eaf4ff;font-style:normal}.platform-dot{display:inline-flex;align-items:center;gap:6px;font-size:10px}.platform-dot i{width:6px;height:6px;border-radius:50%;background:currentColor}.recent-results{display:flex;gap:3px;flex-wrap:nowrap}.recent-results i{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:8px;font-style:normal;font-weight:750}.recent-results .win{background:#eb4938}.recent-results .loss{background:#35404f}.subvalue{margin-top:3px;display:block;color:var(--text-muted);font-size:8px}.follow-button{min-height:31px;padding:0 11px;border:1px solid #b9cadc;border-radius:8px;color:#28649d;background:#fff;font-size:9px}.follow-button.active{border-color:#e4ad33;color:#9a6500;background:#fff8dd}.updating-line{padding:8px;text-align:center;color:var(--text-muted);font-size:9px}.modal-backdrop{position:fixed;inset:0;z-index:1200;padding:18px;display:grid;place-items:center;background:rgba(7,17,31,.58);backdrop-filter:blur(5px)}.user-modal{width:min(1460px,98vw);max-height:94vh;border-radius:18px;overflow:auto;background:#f5f7fa;box-shadow:0 28px 90px rgba(0,0,0,.35)}.modal-titlebar{position:sticky;top:0;z-index:3;min-height:68px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;color:#fff;background:#142945}.modal-titlebar strong,.modal-titlebar span{display:block}.modal-titlebar strong{font-size:15px}.modal-titlebar span{margin-top:4px;color:#bfd0e5;font-size:9px}.modal-titlebar button{width:33px;height:33px;border:1px solid rgba(255,255,255,.2);border-radius:9px;color:#fff;background:rgba(255,255,255,.08);font-size:21px}.modal-profile{margin:12px;padding:14px;border:1px solid var(--border);border-radius:14px;display:flex;align-items:center;justify-content:space-between;background:#fff}.profile-identity{display:flex;align-items:center;gap:11px}.profile-identity>img,.profile-identity>.avatar-fallback{width:54px;height:54px;border-radius:50%;object-fit:cover;display:grid;place-items:center;background:var(--accent-soft)}.profile-identity small{color:#2875bd;font-size:9px;font-weight:750}.profile-identity h2{margin:2px 0;font-size:18px}.profile-identity p{margin:0;color:var(--text-muted);font-size:9px}.profile-identity .follow-button{margin-left:14px}.profile-form{text-align:right}.profile-form>span{color:var(--text-muted);font-size:9px}.profile-form .recent-results{margin:6px 0;justify-content:flex-end}.profile-form strong{font-size:11px}.modal-kpis{margin:0 12px;display:grid;grid-template-columns:repeat(6,1fr);gap:7px}.modal-kpis article{padding:12px;border:1px solid var(--border);border-radius:11px;background:#fff}.modal-kpis span,.modal-kpis strong{display:block}.modal-kpis span{color:var(--text-muted);font-size:8px}.modal-kpis strong{margin-top:6px;font-size:13px}.history-panel{margin:12px;padding:12px;border:1px solid var(--border);border-radius:14px;background:#fff}.history-heading{display:flex;align-items:center;justify-content:space-between}.history-heading h3{margin:0;font-size:13px}.history-heading span{color:var(--text-muted);font-size:9px}.history-scroll{margin-top:10px;overflow:auto}.history-table{width:100%;min-width:1500px;border-collapse:collapse}.history-table th,.history-table td{padding:10px;border:1px solid #e4e9ef;vertical-align:middle;text-align:left;font-size:9px}.history-table th{position:sticky;top:68px;z-index:2;color:#536579;background:#f2f5f9}.history-table td>div+div{margin-top:7px;padding-top:7px;border-top:1px dashed #dfe5eb}.history-table td b,.history-table td small{display:block}.history-table td small{margin-top:3px;color:var(--text-muted)}.history-table .hit{color:#e23b2d;font-weight:750}.modal-empty{padding:50px;text-align:center;color:var(--text-muted)}@media(max-width:1100px){.filter-grid{grid-template-columns:repeat(2,1fr)}.directory-summary{min-width:330px}.modal-kpis{grid-template-columns:repeat(3,1fr)}}@media(max-width:700px){.directory-hero{padding:20px;align-items:stretch;flex-direction:column}.directory-summary{min-width:0}.directory-summary>div{padding:11px}.filter-grid{grid-template-columns:1fr}.wide-filter{grid-column:auto}.filter-search>div{flex-direction:column}.modal-backdrop{padding:0}.user-modal{width:100vw;max-height:100vh;border-radius:0}.modal-profile{align-items:flex-start;flex-direction:column;gap:12px}.profile-form{text-align:left}.profile-form .recent-results{justify-content:flex-start}.modal-kpis{grid-template-columns:repeat(2,1fr)}.history-table th{top:68px}}
+.grade-breakdown{margin:8px 12px 0;padding:10px 12px;border:1px solid var(--border);border-radius:11px;background:#fff}.grade-breakdown summary{cursor:pointer;color:#365b80;font-size:9px;font-weight:750}.grade-breakdown>div{margin-top:9px;display:grid;grid-template-columns:repeat(8,1fr);gap:6px}.grade-breakdown>div>span{padding:8px;border-radius:8px;background:#f4f7fa}.grade-breakdown small,.grade-breakdown b{display:block}.grade-breakdown small{color:var(--text-muted);font-size:7px}.grade-breakdown b{margin-top:3px;font-size:10px}@media(max-width:900px){.grade-breakdown>div{grid-template-columns:repeat(4,1fr)}}@media(max-width:520px){.grade-breakdown>div{grid-template-columns:repeat(2,1fr)}}
 </style>

@@ -2,7 +2,7 @@
   <section class="page-shell">
     <header class="page-header">
       <div><h1>方案大厅</h1><p>聚合各平台真实订单、拆分比赛与结算状态</p></div>
-      <div class="page-actions"><span class="page-time">共 {{ number(total) }} 条</span><button class="primary-button" type="button" @click="load">刷新</button></div>
+      <div class="page-actions"><span class="page-time">共 {{ number(total) }} 条</span></div>
     </header>
 
     <section class="toolbar app-card">
@@ -16,7 +16,7 @@
 
     <section class="orders-card app-card">
       <LoadingSkeleton v-if="loading" :count="7" />
-      <ErrorState v-else-if="error" :description="error" @retry="load" />
+      <ErrorState v-else-if="error" :description="error" />
       <EmptyState v-else-if="!orders.length" title="暂无方案" description="当前筛选条件下没有方案数据" />
       <div v-else class="table-wrap">
         <table class="data-table orders-table">
@@ -60,7 +60,7 @@
       <section class="user-modal" role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
         <button class="modal-close" type="button" aria-label="关闭" @click="closeUser">×</button>
         <LoadingSkeleton v-if="userLoading" :count="4" />
-        <ErrorState v-else-if="userError" :description="userError" @retry="reloadUser" />
+        <ErrorState v-else-if="userError" :description="userError" />
         <template v-else-if="userDetail.user">
           <header class="modal-profile">
             <img v-if="userDetail.user.avatar_url" class="modal-avatar" :src="userDetail.user.avatar_url" alt="">
@@ -139,7 +139,7 @@ async function load() {
   } catch {
     orders.value = []
     total.value = 0
-    error.value = "方案数据暂时无法读取，请稍后重试或检查接口连接状态"
+    error.value = "方案数据暂时不可用"
   } finally { loading.value = false }
 }
 

@@ -1,9 +1,9 @@
 <template>
   <section class="page-shell">
-    <header class="page-header"><div><h1>赛事分析</h1><p>仅使用未截止方案作为分析证据</p></div><button class="primary-button" type="button" @click="load">刷新分析</button></header>
+    <header class="page-header"><div><h1>赛事分析</h1><p>仅使用未截止方案作为分析证据</p></div></header>
     <section class="toolbar app-card"><input class="field" :value="data.day || ''" placeholder="赛事日期待同步" readonly aria-label="赛事日期"><select v-model="selectedPlay" aria-label="玩法筛选"><option value="">全部玩法</option><option v-for="play in plays" :key="play" :value="play">{{ play }}</option></select><select disabled aria-label="等级筛选"><option>等级字段未提供</option></select></section>
     <LoadingSkeleton v-if="loading" class="section-gap" type="cards" :count="3" />
-    <ErrorState v-else-if="error" class="app-card section-gap" :description="error" @retry="load" />
+    <ErrorState v-else-if="error" class="app-card section-gap" :description="error" />
     <template v-else>
       <section class="stats-grid section-gap"><article class="app-card"><span>未截止方案</span><strong>{{ number(data.unexpired_orders) }}</strong></article><article class="app-card"><span>分析场次</span><strong>{{ number((data.matches||[]).length) }}</strong></article><article class="app-card"><span>覆盖玩法</span><strong>{{ playCount }}</strong></article></section>
       <section v-if="(data.matches||[]).length" class="match-list">
@@ -20,7 +20,7 @@
 import { computed,onMounted,ref } from "vue";import axios from "axios";import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue";import EmptyState from "../components/ui/EmptyState.vue";import ErrorState from "../components/ui/ErrorState.vue"
 const plays=["胜平负","让球胜平负","半全场","比分"],selectedPlay=ref(""),data=ref({}),loading=ref(true),error=ref("")
 const visiblePlays=computed(()=>selectedPlay.value?[selectedPlay.value]:plays),playCount=computed(()=>{const set=new Set();(data.value.matches||[]).forEach(m=>Object.keys(m.plays||{}).forEach(p=>{if((m.plays[p]||[]).length)set.add(p)}));return set.size})
-async function load(){loading.value=true;error.value="";try{const r=await axios.get("/api/portal/analysis",{timeout:25000});if(!r.data||r.data.code!==200)throw new Error();data.value=r.data.data||{}}catch{data.value={};error.value="赛事分析暂时无法读取，请稍后重试或检查接口连接状态"}finally{loading.value=false}}
+async function load(){loading.value=true;error.value="";try{const r=await axios.get("/api/portal/analysis",{timeout:15000});if(!r.data||r.data.code!==200)throw new Error();data.value=r.data.data||{}}catch{data.value={};error.value="赛事分析数据暂时不可用"}finally{loading.value=false}}
 function number(v){return Math.round(Number(v||0)).toLocaleString("zh-CN")} function isPeak(rows,item){return Number(item.share||0)===Math.max(...rows.map(r=>Number(r.share||0)))} onMounted(load)
 </script>
 <style scoped>

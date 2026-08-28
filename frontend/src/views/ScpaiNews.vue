@@ -2,7 +2,7 @@
   <section class="page-shell scpai-news-page">
     <header class="scpai-report-head">
       <div><span class="scpai-kicker">MATCH NEWS DESK</span><h1>绿茵智核比赛新闻</h1><p>按比赛整理公开资讯、球队影响与发布时间</p></div>
-      <div class="scpai-report-actions"><span :class="['scpai-live-pill',news.status]">{{ newsStatus }}</span><button type="button" :disabled="newsRefreshing" @click="refreshPage">{{ newsRefreshing ? "更新中" : "刷新新闻" }}</button></div>
+      <div class="scpai-report-actions"><span :class="['scpai-live-pill',news.status]">{{ newsRefreshing ? "数据同步中" : newsStatus }}</span></div>
     </header>
     <nav class="scpai-page-tabs" aria-label="赛事数据二级导航"><router-link to="/match-data">水位看板</router-link><router-link to="/match-news">比赛新闻</router-link></nav>
 
@@ -10,7 +10,7 @@
       <aside class="scpai-news-match-panel">
         <header><div><h2>比赛队列</h2><p>选择比赛后按需加载对应新闻</p></div><span>{{ matches.length }} 场</span></header>
         <LoadingSkeleton v-if="matchesLoading" type="rows" :count="5" />
-        <ErrorState v-else-if="matchesError && !matches.length" :description="matchesError" @retry="refreshPage" />
+        <ErrorState v-else-if="matchesError && !matches.length" :description="matchesError" />
         <div v-else-if="matches.length" class="scpai-news-match-list">
           <button v-for="item in matches" :key="item.externalId" type="button" :class="{selected:item.externalId===selectedId}" @click="selectMatch(item.externalId)"><i :class="{movement:Number(item.strength||0)>=70}"></i><div><small>{{ item.code || "--" }} · {{ item.competition || "赛事" }}</small><strong>{{ teamNames(item) }}</strong><footer><span>{{ shortTime(item.kickoffAt || item.kickoff) }}</span><em>{{ item.classification || item.status || "监测中" }}</em></footer></div></button>
         </div>
@@ -19,7 +19,7 @@
 
       <article class="scpai-news-detail">
         <LoadingSkeleton v-if="newsLoading" type="rows" :count="5" />
-        <ErrorState v-else-if="newsError && !items.length" :description="newsError" @retry="loadNews" />
+        <ErrorState v-else-if="newsError && !items.length" :description="newsError" />
         <template v-else-if="selectedId">
           <header class="scpai-news-hero"><div><span>{{ currentMatch.code || "比赛新闻" }}</span><h2>{{ currentMatch.home || "主队" }} <em>VS</em> {{ currentMatch.away || "客队" }}</h2><p>{{ currentMatch.competition || "赛事待同步" }} · {{ shortTime(currentMatch.kickoffAt || currentMatch.kickoff) }}</p></div><aside><b>{{ items.length }}</b><span>条公开资讯</span></aside></header>
           <section v-if="news.analysis" class="scpai-news-analysis"><span class="scpai-kicker">NEWS ANALYSIS</span><p>{{ analysisText }}</p></section>

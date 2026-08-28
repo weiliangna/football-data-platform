@@ -19,6 +19,10 @@ from api.portal import (
 from common.pass_utils import normalize_pass_summary
 from common.platform_registry import default_platform_metadata
 from common.match_identity import table_columns
+from common.user_grading import (
+    invalidate_user_grade_cache,
+    load_user_grades,
+)
 
 
 router = APIRouter(
@@ -166,7 +170,7 @@ def percentile_map(rows, key, group_key="platform_id"):
     return result
 
 
-def user_grade_rows(cursor, only_active=True):
+def legacy_user_grade_rows(cursor, only_active=True):
     # 近7个赛事日，按06:00切日
     cursor.execute(
         f"""
@@ -312,6 +316,13 @@ def user_grade_rows(cursor, only_active=True):
         })
     result.sort(key=lambda x: ({"S":0,"A":1,"B":2}[x["grade"]], -x["score"], -x["profit7d"]))
     return result
+
+
+def user_grade_rows(cursor, only_active=True):
+    rows = load_user_grades(cursor)
+    for row in rows:
+        row["platform_name"] = platform_name(row.get("platform_id"))
+    return rows
 
 
 class GradePayload(BaseModel):
@@ -1116,7 +1127,9 @@ def set_grade(platform_id:int,user_id:int,payload:GradePayload):
             """,(platform_id,user_id,grade))
         else:
             cursor.execute("DELETE FROM user_grade_overrides WHERE platform_id=%s AND user_id=%s",(platform_id,user_id))
-        conn.commit(); return {"code":200,"message":"保存成功"}
+        conn.commit()
+        invalidate_user_grade_cache()
+        return {"code":200,"message":"保存成功"}
     finally:
         cursor.close(); conn.close()
 
