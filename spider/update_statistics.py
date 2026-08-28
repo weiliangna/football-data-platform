@@ -175,6 +175,7 @@ def main():
                 SELECT platform_id,user_id,id,result
                 FROM orders
                 WHERE user_id IS NOT NULL AND user_id<>0
+                  AND result IN ('赢','输')
                 ORDER BY platform_id,user_id,id DESC
                 """
             )
