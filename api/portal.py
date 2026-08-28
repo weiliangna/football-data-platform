@@ -51,11 +51,10 @@ FOUR_PLAYS = STANDARD_PLAYS
 
 DASHBOARD_CACHE_SECONDS = 60.0
 DASHBOARD_STALE_SECONDS = 300.0
-# The first dashboard build runs in a background executor.  Production data
-# sets can legitimately take a few seconds to warm the context cache; waiting
-# a little longer avoids returning the loading sentinel while the build is
-# still making progress.  Subsequent requests are served from the cache.
-DASHBOARD_FIRST_RESPONSE_TIMEOUT = 20.0
+# Never make a browser request wait for a full dashboard rebuild.  A persisted
+# or in-process snapshot is returned immediately; only a cold start may wait a
+# short grace period while the single-flight refresh warms in the background.
+DASHBOARD_FIRST_RESPONSE_TIMEOUT = 2.5
 _dashboard_executor = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="portal-dashboard",

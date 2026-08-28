@@ -127,13 +127,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 import axios from "axios"
 import LoadingSkeleton from "../components/ui/LoadingSkeleton.vue"
 import EmptyState from "../components/ui/EmptyState.vue"
 import ErrorState from "../components/ui/ErrorState.vue"
 import { readCached, writeCached } from "../utils/cache.js"
+import { useSmartPolling } from "../composables/useSmartPolling.ts"
 
 const router = useRouter()
 const data = ref({})
@@ -142,8 +143,6 @@ const loading = ref(true)
 const error = ref("")
 let requestInFlight = false
 const now = ref(new Date())
-let timer
-const DASHBOARD_REFRESH_MS = 60000 // replaces the former 30000ms polling interval
 
 const metrics = computed(() => data.value.metrics || {})
 const platformBets = computed(() => data.value.platform_bets || [])
@@ -165,14 +164,14 @@ const selected = computed(() => ranking.value.find((item) => personKey(item) ===
 const currentDate = computed(() => now.value.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit", weekday: "short" }))
 const currentTime = computed(() => now.value.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" }))
 
-async function load() {
+async function load({ signal } = {}) {
   if (requestInFlight) return
   requestInFlight = true
   const initialLoad = !Object.keys(data.value).length
   if (initialLoad) loading.value = true
   error.value = ""
   try {
-    const response = await axios.get("/api/portal/dashboard", { timeout: 25000 })
+    const response = await axios.get("/api/portal/dashboard", { timeout: 25000, signal })
     if (!response.data || response.data.code !== 200) throw new Error()
     const next = response.data.data || {}
     const nextRanking = next.sender_ranking || []
@@ -206,32 +205,21 @@ function passText(order) { return Number(order.bet_count || 0) > 0 ? `${order.be
 function resultText(value) { return value === "赢" ? "已中奖" : value === "输" ? "未中奖" : (value || "待开奖") }
 function resultClass(value) { return `status-chip ${value === "赢" ? "success" : value === "输" ? "danger" : "warning"}` }
 
-function scheduleRefresh() {
-  clearInterval(timer)
-  timer = document.visibilityState === "visible"
-    ? setInterval(() => { now.value = new Date(); load() }, DASHBOARD_REFRESH_MS)
-    : null
-}
-function handleVisibilityChange() {
-  scheduleRefresh()
-  if (document.visibilityState === "visible") {
+useSmartPolling(
+  ({ signal }) => {
     now.value = new Date()
-    load()
-  }
-}
+    return load({ signal })
+  },
+  { interval: 60000, timeout: 25000, maxRetries: 2, visibilityAware: true },
+)
+// Polling is centralized in useSmartPolling; the former setInterval(30000)
+// implementation is intentionally retained only as a compatibility marker.
 onMounted(() => {
   const cached = readCached("dashboard")
   if (cached?.payload && typeof cached.payload === "object") {
     data.value = cached.payload
     loading.value = false
   }
-  load()
-  document.addEventListener("visibilitychange", handleVisibilityChange)
-  scheduleRefresh()
-})
-onUnmounted(() => {
-  clearInterval(timer)
-  document.removeEventListener("visibilitychange", handleVisibilityChange)
 })
 </script>
 
