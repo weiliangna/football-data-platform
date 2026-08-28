@@ -11,6 +11,10 @@ __pycache__/
 node_modules/
 frontend/node_modules/
 frontend/dist/
+frontend/dist-vue-legacy/
+frontend-v2/node_modules/
+frontend-v2/dist/
+frontend-v2/*.tsbuildinfo
 
 # Environment files and local secrets
 .env
@@ -60,7 +64,7 @@ backup*/
 *_backup*
 *.bak
 *.bak_*
-*~
+~*
 main.py.bak_*
 
 # Temporary/debug pages and copied files
