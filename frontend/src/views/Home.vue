@@ -204,11 +204,28 @@ function passText(order) { return Number(order.bet_count || 0) > 0 ? `${order.be
 function resultText(value) { return value === "赢" ? "已中奖" : value === "输" ? "未中奖" : (value || "待开奖") }
 function resultClass(value) { return `status-chip ${value === "赢" ? "success" : value === "输" ? "danger" : "warning"}` }
 
+function scheduleRefresh() {
+  clearInterval(timer)
+  timer = document.visibilityState === "visible"
+    ? setInterval(() => { now.value = new Date(); load() }, 30000)
+    : null
+}
+function handleVisibilityChange() {
+  scheduleRefresh()
+  if (document.visibilityState === "visible") {
+    now.value = new Date()
+    load()
+  }
+}
 onMounted(() => {
   load()
-  timer = setInterval(() => { now.value = new Date(); load() }, 30000)
+  document.addEventListener("visibilitychange", handleVisibilityChange)
+  scheduleRefresh()
 })
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => {
+  clearInterval(timer)
+  document.removeEventListener("visibilitychange", handleVisibilityChange)
+})
 </script>
 
 <style scoped>

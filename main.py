@@ -1,3 +1,8 @@
+from collections import defaultdict, deque
+from math import ceil
+from threading import Lock
+from time import perf_counter
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -18,8 +23,56 @@ from api.sync import router as sync_router
 from api.user import router as user_router
 
 
+class RequestTimingMiddleware:
+    """Log bounded request timings without logging query strings or credentials."""
+
+    def __init__(self, app, sample_size=256):
+        self.app = app
+        self.sample_size = sample_size
+        self.samples = defaultdict(lambda: deque(maxlen=sample_size))
+        self.lock = Lock()
+
+    def _record(self, method, path, status, elapsed_ms):
+        key = f"{method} {path}"
+        with self.lock:
+            values = self.samples[key]
+            values.append(elapsed_ms)
+            ordered = sorted(values)
+            p95 = ordered[max(0, ceil(len(ordered) * 0.95) - 1)]
+            average = sum(ordered) / len(ordered)
+            maximum = ordered[-1]
+            count = len(ordered)
+        print(
+            "[api-perf] method=%s path=%s status=%s elapsed_ms=%.2f "
+            "calls=%d avg_ms=%.2f p95_ms=%.2f max_ms=%.2f"
+            % (method, path, status, elapsed_ms, count, average, p95, maximum),
+            flush=True,
+        )
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        method = scope.get("method", "?")
+        path = scope.get("path", "/")
+        status = 500
+
+        async def send_timed(message):
+            nonlocal status
+            if message.get("type") == "http.response.start":
+                status = int(message.get("status", 500))
+            await send(message)
+
+        started = perf_counter()
+        try:
+            await self.app(scope, receive, send_timed)
+        finally:
+            self._record(method, path, status, (perf_counter() - started) * 1000)
+
+
 app = FastAPI(title="足球 AI 数据系统", version="6.1")
 
+app.add_middleware(RequestTimingMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

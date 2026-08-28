@@ -103,8 +103,24 @@ function number(value) { return Math.round(Number(value || 0)).toLocaleString("z
 function percent(value) { return `${Number(value || 0).toFixed(1)}%` }
 
 watch(playType, load)
-onMounted(() => { load(); refreshTimer = setInterval(load, 30000) })
-onUnmounted(() => { clearInterval(refreshTimer); requestController?.abort() })
+function scheduleRefresh() {
+  clearInterval(refreshTimer)
+  refreshTimer = document.visibilityState === "visible" ? setInterval(load, 30000) : null
+}
+function handleVisibilityChange() {
+  scheduleRefresh()
+  if (document.visibilityState === "visible") load()
+}
+onMounted(() => {
+  load()
+  document.addEventListener("visibilitychange", handleVisibilityChange)
+  scheduleRefresh()
+})
+onUnmounted(() => {
+  clearInterval(refreshTimer)
+  document.removeEventListener("visibilitychange", handleVisibilityChange)
+  requestController?.abort()
+})
 </script>
 
 <style scoped>
