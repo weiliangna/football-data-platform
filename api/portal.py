@@ -114,6 +114,92 @@ def _empty_dashboard_response(*, freshness="refreshing", refreshing=True,
     }
 
 
+def _build_dashboard_minimal_response():
+    """Build a small orders-only dashboard while the full context warms.
+
+    This deliberately avoids order_matches, profile, and settlement joins so
+    a cold start can still render useful counters on a busy two-core host.
+    The normal single-flight build replaces this payload once complete.
+    """
+
+    conn = cursor = None
+    try:
+        conn = get_conn()
+        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor.execute("SELECT NOW() AS now_time")
+        now = cursor.fetchone().get("now_time") or datetime.now()
+        target_day = current_event_day(now)
+        day_start = datetime.combine(target_day, datetime.min.time()) + timedelta(hours=6)
+        day_end = day_start + timedelta(days=1)
+        cursor.execute(
+            """
+            SELECT platform_id,user_id,MAX(nickname) AS nickname,
+                   COUNT(*) AS order_count,
+                   IFNULL(SUM(stake),0) AS amount,
+                   IFNULL(SUM(follow_num),0) AS followers
+            FROM orders
+            WHERE COALESCE(publish_time,created_time)>=%s
+              AND COALESCE(publish_time,created_time)<%s
+              AND platform_id IN (1,2,3,4)
+            GROUP BY platform_id,user_id
+            ORDER BY amount DESC,followers DESC,order_count DESC
+            LIMIT 30
+            """,
+            (day_start, day_end),
+        )
+        ranking = []
+        for row in cursor.fetchall() or []:
+            ranking.append({
+                "platform_id": intv(row.get("platform_id")),
+                "platform_name": PLATFORMS.get(intv(row.get("platform_id")), ""),
+                "user_id": intv(row.get("user_id")),
+                "nickname": row.get("nickname") or "未知用户",
+                "avatar_url": "",
+                "amount": round(money(row.get("amount")), 2),
+                "followers": intv(row.get("followers")),
+                "order_count": intv(row.get("order_count")),
+                "orders": [],
+                "history_record": "--",
+                "history_hit_rate": None,
+            })
+        return {
+            "code": 200,
+            "data": {
+                "day": str(target_day),
+                "server_time": now,
+                "metrics": {
+                    "yesterday_plans": 0,
+                    "yesterday_wins": 0,
+                    "yesterday_lost": 0,
+                    "yesterday_settled": 0,
+                    "today_plans": sum(item["order_count"] for item in ranking),
+                    "today_followers": sum(item["followers"] for item in ranking),
+                    "today_amount": round(sum(item["amount"] for item in ranking), 2),
+                    "unexpired_plans": 0,
+                },
+                "platform_bets": [],
+                "sender_ranking": ranking,
+                "hot_plays": [
+                    {"play_type": play_type, "items": []}
+                    for play_type in FOUR_PLAYS
+                ],
+            },
+            "meta": {
+                "freshness": "degraded",
+                "updated_at": datetime.now().isoformat(),
+                "age_seconds": 0.0,
+                "refreshing": True,
+            },
+        }
+    except Exception:
+        return None
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
 def money(value):
     try:
         return float(value or 0)
@@ -2090,9 +2176,17 @@ async def dashboard():
             timeout=DASHBOARD_FIRST_RESPONSE_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        # Keep the response renderable.  The single-flight task continues in
-        # the executor and will replace this envelope once complete.
-        return _empty_dashboard_response()
+        # Keep the response renderable.  A bounded orders-only query may add
+        # useful counters; the full single-flight task continues in the
+        # background and replaces this payload once complete.
+        try:
+            minimal = await asyncio.wait_for(
+                asyncio.to_thread(_build_dashboard_minimal_response),
+                timeout=1.0,
+            )
+        except asyncio.TimeoutError:
+            minimal = None
+        return minimal or _empty_dashboard_response()
 
 
 @router.get("/schemes")
