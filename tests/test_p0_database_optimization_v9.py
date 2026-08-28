@@ -47,7 +47,7 @@ class P0DatabaseOptimizationTests(unittest.TestCase):
     def test_dashboard_cache_and_top30_pipeline_contract(self):
         self.assertEqual(portal.DASHBOARD_CACHE_SECONDS, 60.0)
         self.assertEqual(portal.DASHBOARD_STALE_SECONDS, 300.0)
-        self.assertEqual(portal.DASHBOARD_FIRST_RESPONSE_TIMEOUT, 8.0)
+        self.assertEqual(portal.DASHBOARD_FIRST_RESPONSE_TIMEOUT, 20.0)
         source = inspect.getsource(portal.build_dashboard_response)
         self.assertIn("get_current_context(cursor, include_profiles=False)", source)
         self.assertIn("candidate_ranking[:30]", source)

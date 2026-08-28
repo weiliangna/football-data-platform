@@ -50,7 +50,11 @@ FOUR_PLAYS = STANDARD_PLAYS
 
 DASHBOARD_CACHE_SECONDS = 60.0
 DASHBOARD_STALE_SECONDS = 300.0
-DASHBOARD_FIRST_RESPONSE_TIMEOUT = 8.0
+# The first dashboard build runs in a background executor.  Production data
+# sets can legitimately take a few seconds to warm the context cache; waiting
+# a little longer avoids returning the loading sentinel while the build is
+# still making progress.  Subsequent requests are served from the cache.
+DASHBOARD_FIRST_RESPONSE_TIMEOUT = 20.0
 _dashboard_executor = ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="portal-dashboard",
@@ -1397,13 +1401,35 @@ def build_current_context(cursor, include_profiles=False):
             if source in deadline_summary:
                 deadline_summary[source] += 1
 
+    # ``load_orders_for_day`` already fetched and grouped all pending orders
+    # published during the current event day.  ``load_pending_orders`` also
+    # includes older orders whose match deadline falls today; only fetch match
+    # legs for that disjoint remainder so the common case does not issue a
+    # second large IN query for the same order ids.
     pending_orders = load_pending_orders(cursor, target_day)
-    pending_grouped = load_hot_play_matches(
-        cursor,
-        [intv(order.get("id")) for order in pending_orders],
-    )
+    initial_order_ids = {
+        intv(order.get("id"))
+        for order in orders
+    }
+    extra_pending_orders = [
+        order
+        for order in pending_orders
+        if intv(order.get("id")) not in initial_order_ids
+    ]
+    pending_grouped = {
+        order_id: rows
+        for order_id, rows in grouped.items()
+    }
+    if extra_pending_orders:
+        pending_grouped.update(
+            load_hot_play_matches(
+                cursor,
+                [intv(order.get("id")) for order in extra_pending_orders],
+            )
+        )
+    hot_orders = [*orders, *extra_pending_orders]
     today_hot_legs = []
-    for order in pending_orders:
+    for order in hot_orders:
         order_level_deadline = order_deadline(order)
         for row in pending_grouped.get(intv(order.get("id")), []):
             deadline = order_level_deadline or match_deadline(
