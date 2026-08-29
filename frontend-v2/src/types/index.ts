@@ -47,6 +47,7 @@ export interface Plan {
 
 export interface User {
   id: string;
+  platformId?: number;
   name: string;
   platform: string;
   recent: boolean[];

@@ -1,6 +1,6 @@
 import { dashboardMetrics, hotUsers, matches } from './dashboard.js';
 import { plans } from './plans.js';
-import { users } from './users.js';
+import { userDetail, users } from './users.js';
 import { results } from './results.js';
 import { hot } from '../pages/heat.js';
 import { analysisCards, analysisMatch, timeline } from './analysis.js';
@@ -135,6 +135,7 @@ export async function loadUsers(): Promise<boolean> {
     if (!rows.length) return false;
     users.splice(0, users.length, ...rows.map((row, index) => ({
       id: text(row.user_id ?? row.id, `LIVE-USER-${index}`),
+      platformId: number(row.platform_id),
       name: text(row.nickname ?? row.username, '未知用户'),
       platform: text(row.platform_name ?? row.platform),
       recent: Array.isArray(row.recent) ? row.recent.map(Boolean) : [],
@@ -152,6 +153,41 @@ export async function loadUsers(): Promise<boolean> {
       roi: number(row.roi),
       avatar: text(row.avatar_url ?? row.avatar, ''),
     })));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function loadUserDetail(user: { platformId?: number; platform: string; id: string }): Promise<boolean> {
+  const platformIds: Record<string, number> = { 彩站云: 1, 州运宝: 2, 鸿瑞: 3, 云彩: 4 };
+  const platformId = user.platformId || platformIds[user.platform];
+  if (!platformId || !user.id) return false;
+  userDetail.user = null;
+  userDetail.orders = [];
+  try {
+    const response = await fetch(`/api/portal/user/${platformId}/${encodeURIComponent(user.id)}`, { headers: { Accept: 'application/json' }, credentials: 'include' });
+    if (!response.ok) return false;
+    const payload = await response.json() as { code?: number; data?: { user?: Record<string, unknown>; orders?: unknown } };
+    if (payload.code !== undefined && payload.code !== 200) return false;
+    userDetail.user = payload.data?.user || null;
+    userDetail.orders = Array.isArray(payload.data?.orders) ? payload.data.orders.filter(isRow).map((row) => ({
+      id: row.id as string | number | undefined,
+      publish_time: text(row.publish_time ?? row.created_time, ''),
+      match_count: number(row.match_count ?? (Array.isArray(row.matches) ? row.matches.length : 0)),
+      match_name: text(row.match_name ?? row.match, ''),
+      play_type: text(row.play_type ?? row.play, ''),
+      selection: text(row.selection ?? row.pick, ''),
+      odds_text: text(row.odds_text ?? row.odds, ''),
+      result: text(row.result, '待开奖'),
+      pass_summary: text(row.pass_summary, ''),
+      expected_bonus: number(row.expected_bonus ?? row.profit),
+      lot_multi: number(row.lot_multi ?? row.multiple),
+      stake: number(row.stake ?? row.amount),
+      follow_num: number(row.follow_num ?? row.followers),
+      bonus: number(row.bonus),
+      profit: number(row.profit),
+    })) : [];
     return true;
   } catch {
     return false;
