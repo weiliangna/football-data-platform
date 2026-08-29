@@ -1,29 +1,66 @@
-import { dashboardMetrics, matches } from './dashboard.js';
+import { dashboardMetrics, hotUsers, matches } from './dashboard.js';
 import { plans } from './plans.js';
 import { users } from './users.js';
 import { results } from './results.js';
 import { hot } from '../pages/heat.js';
 import { analysisCards, analysisMatch, timeline } from './analysis.js';
 import { news } from './news.js';
-import type { Plan } from '../types/index.js';
-import type { Match } from '../types/index.js';
+import type { Plan, Match } from '../types/index.js';
+
+type JsonRow = Record<string, unknown>;
+
+function isRow(value: unknown): value is JsonRow {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function rowsFromPayload(payload: { data?: unknown }): JsonRow[] {
+  const body = payload.data;
+  if (Array.isArray(body)) return body.filter(isRow);
+  if (!isRow(body)) return [];
+  const nested = body.items ?? body.data;
+  return Array.isArray(nested) ? nested.filter(isRow) : [];
+}
+
+function text(value: unknown, fallback = '--') {
+  const result = String(value ?? '').trim();
+  return result || fallback;
+}
+
+function number(value: unknown, fallback = 0) {
+  const result = Number(value);
+  return Number.isFinite(result) ? result : fallback;
+}
 
 /** Loads the existing FastAPI dashboard without changing its response contract. */
 export async function loadDashboard(): Promise<boolean> {
   try {
     const response = await fetch('/api/portal/dashboard', { headers: { Accept: 'application/json' }, credentials: 'include' });
     if (!response.ok) return false;
-    const payload = await response.json() as { code?: number; data?: { metrics?: Record<string, unknown> } };
+    const payload = await response.json() as { code?: number; data?: { metrics?: Record<string, unknown>; sender_ranking?: unknown } };
     if (payload.code !== undefined && payload.code !== 200) return false;
     const metrics = payload.data?.metrics;
     if (!metrics) return false;
-    const map:Record<string,string>={matches:'matches',live:'live',plans:'plans',users:'users',anomalies:'anomalies',hot:'hot',completed:'completed'};
+    const map: Record<string, string> = { matches: 'matches', live: 'live', plans: 'plans', users: 'users', anomalies: 'anomalies', hot: 'hot', completed: 'completed' };
     for (const [target, source] of Object.entries(map)) {
       const value = Number(metrics[source]);
       if (Number.isFinite(value)) (dashboardMetrics as unknown as Record<string, number>)[target] = value;
     }
+    if (Array.isArray(payload.data?.sender_ranking)) {
+      const ranking = payload.data.sender_ranking.filter(isRow);
+      const liveUsers = ranking.slice(0, hotUsers.length).map((row) => ({
+        name: text(row.nickname ?? row.username, '未知用户'),
+        platform: text(row.platform_name ?? row.platform),
+        winRate: number(row.history_hit_rate ?? row.hit_rate),
+        roi: number(row.roi ?? row.monthly_roi),
+        plans: number(row.order_count ?? row.today_orders),
+        avatar: text(row.avatar_url ?? row.avatar, ''),
+      }));
+      if (liveUsers.length) (hotUsers as unknown as Array<Record<string, unknown>>).splice(0, hotUsers.length, ...liveUsers);
+    }
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export async function loadPlans(): Promise<boolean> {
@@ -32,28 +69,31 @@ export async function loadPlans(): Promise<boolean> {
     if (!response.ok) return false;
     const payload = await response.json() as { code?: number; data?: unknown };
     if (payload.code !== undefined && payload.code !== 200) return false;
-    const body = payload.data as { items?: Record<string, unknown>[]; data?: Record<string, unknown>[] } | Record<string, unknown>[] | undefined;
-    const rows = Array.isArray(body) ? body : body?.items || body?.data || [];
+    const rows = rowsFromPayload(payload);
     if (!rows.length) return false;
     plans.splice(0, plans.length, ...rows.map((row, index) => ({
-      id: String(row.id ?? row.order_id ?? `LIVE-${index}`),
-      platform: String(row.platform_name ?? row.platform ?? '--'),
-      user: String(row.nickname ?? row.username ?? '--'),
-      userId: String(row.user_id ?? '--'),
-      match: String(row.match_name ?? row.match ?? '--'),
-      league: String(row.league ?? '--'),
-      play: String(row.play_type ?? row.play ?? '--'),
-      pick: String(row.selection ?? row.pick ?? '--'),
-      amount: Number(row.stake ?? row.amount ?? 0) || 0,
-      multiple: Number(row.multiple ?? row.bet_count ?? 1) || 1,
-      publishAt: String(row.publish_time ?? row.created_time ?? '--'),
-      cutoffAt: String(row.deadline_time ?? '--'),
-      status: String(row.status ?? '进行中'),
-      result: String(row.result ?? '待开奖'),
-      expectedProfit: Number(row.profit ?? 0) || 0,
-    } as Plan)));
+      id: text(row.id ?? row.order_id, `LIVE-${index}`),
+      platform: text(row.platform_name ?? row.platform),
+      user: text(row.nickname ?? row.username, '未知用户'),
+      userId: text(row.user_id),
+      avatar: text(row.avatar_url ?? row.avatar, ''),
+      match: text(row.match_name ?? row.match),
+      league: text(row.league),
+      play: text(row.play_type ?? row.play),
+      pick: text(row.selection ?? row.pick),
+      amount: number(row.stake ?? row.amount ?? row.self_buy),
+      multiple: number(row.multiple ?? row.lot_multi ?? row.bet_count, 1),
+      sp: text(row.sp ?? row.odds_text ?? row.odds ?? row.sp_odds ?? row.expected_odds),
+      publishAt: text(row.publish_time ?? row.created_time),
+      cutoffAt: text(row.deadline_time, ''),
+      status: text(row.status, '进行中') as Plan['status'],
+      result: text(row.result, '待开奖') as Plan['result'],
+      expectedProfit: number(row.expected_bonus ?? row.expected_profit ?? row.profit),
+    })));
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export async function loadMatches(): Promise<boolean> {
@@ -62,24 +102,27 @@ export async function loadMatches(): Promise<boolean> {
     if (!response.ok) return false;
     const payload = await response.json() as { code?: number; data?: unknown };
     if (payload.code !== undefined && payload.code !== 200) return false;
-    const body = payload.data as { items?: Record<string, unknown>[]; data?: Record<string, unknown>[] } | Record<string, unknown>[] | undefined;
-    const rows = Array.isArray(body) ? body : body?.items || body?.data || [];
+    const rows = rowsFromPayload(payload);
     if (!rows.length) return false;
     matches.splice(0, matches.length, ...rows.map((row, index) => ({
-      id: String(row.id ?? row.match_id ?? `LIVE-MATCH-${index}`),
-      time: String(row.match_time ?? row.kickoff ?? row.start_time ?? '--'),
-      league: String(row.league ?? row.league_name ?? '--'),
-      home: String(row.home_team ?? row.home ?? '--'),
-      away: String(row.away_team ?? row.away ?? '--'),
-      score: String(row.score ?? '- : -'),
-      status: String(row.status ?? '未开始') as Match['status'],
-      euro: [], asian: String(row.asian ?? '--'), totals: String(row.totals ?? '--'),
-      plans: Number(row.plan_count ?? row.schemes ?? 0) || 0,
-      heat: Number(row.heat ?? row.heat_score ?? 0) || 0,
-      category: '其他',
-    } as Match)));
+      id: text(row.id ?? row.match_id, `LIVE-MATCH-${index}`),
+      time: text(row.match_time ?? row.kickoff ?? row.start_time),
+      league: text(row.league ?? row.league_name),
+      home: text(row.home_team ?? row.home),
+      away: text(row.away_team ?? row.away),
+      score: text(row.score, '- : -'),
+      status: text(row.status, '未开赛') as Match['status'],
+      euro: [],
+      asian: text(row.asian),
+      totals: text(row.totals),
+      plans: number(row.plan_count ?? row.schemes),
+      heat: number(row.heat ?? row.heat_score),
+      category: '其他' as const,
+    })));
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export async function loadUsers(): Promise<boolean> {
@@ -88,22 +131,31 @@ export async function loadUsers(): Promise<boolean> {
     if (!response.ok) return false;
     const payload = await response.json() as { code?: number; data?: unknown };
     if (payload.code !== undefined && payload.code !== 200) return false;
-    const body = payload.data as { items?: Record<string, unknown>[]; data?: Record<string, unknown>[] } | Record<string, unknown>[] | undefined;
-    const rows = Array.isArray(body) ? body : body?.items || body?.data || [];
+    const rows = rowsFromPayload(payload);
     if (!rows.length) return false;
     users.splice(0, users.length, ...rows.map((row, index) => ({
-      id: String(row.user_id ?? row.id ?? `LIVE-USER-${index}`),
-      name: String(row.nickname ?? row.username ?? '--'), platform: String(row.platform_name ?? row.platform ?? '--'),
-      recent: [], streak: Number(row.streak ?? row.current_streak ?? 0) || 0,
-      record: String(row.history_record ?? row.record ?? '--'), monthlyRoi: Number(row.monthly_roi ?? row.roi ?? 0) || 0,
-      todayPlans: Number(row.today_orders ?? row.order_count ?? 0) || 0, followers: Number(row.followers ?? row.follow_num ?? 0) || 0,
-      followAmount: Number(row.follow_amount ?? row.total_follow_amount ?? 0) || 0,
-      tags: Array.isArray(row.tags) ? row.tags.map(String) : [], followed: Boolean(row.followed),
-      winRate: Number(row.history_hit_rate ?? row.hit_rate ?? 0) || 0, selfBuy: Number(row.self_buy ?? 0) || 0,
-      profit: Number(row.profit ?? 0) || 0, roi: Number(row.roi ?? 0) || 0, avatar: String(row.avatar_url ?? ''),
+      id: text(row.user_id ?? row.id, `LIVE-USER-${index}`),
+      name: text(row.nickname ?? row.username, '未知用户'),
+      platform: text(row.platform_name ?? row.platform),
+      recent: Array.isArray(row.recent) ? row.recent.map(Boolean) : [],
+      streak: number(row.streak ?? row.current_streak),
+      record: text(row.history_record ?? row.record),
+      monthlyRoi: number(row.monthly_roi ?? row.roi),
+      todayPlans: number(row.today_orders ?? row.order_count),
+      followers: number(row.followers ?? row.follow_num),
+      followAmount: number(row.follow_amount ?? row.total_follow_amount),
+      tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
+      followed: Boolean(row.followed),
+      winRate: number(row.history_hit_rate ?? row.hit_rate),
+      selfBuy: number(row.self_buy),
+      profit: number(row.profit),
+      roi: number(row.roi),
+      avatar: text(row.avatar_url ?? row.avatar, ''),
     })));
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export async function loadResults(): Promise<boolean> {
@@ -112,18 +164,25 @@ export async function loadResults(): Promise<boolean> {
     if (!response.ok) return false;
     const payload = await response.json() as { code?: number; data?: unknown };
     if (payload.code !== undefined && payload.code !== 200) return false;
-    const body = payload.data as { items?: Record<string, unknown>[]; data?: Record<string, unknown>[] } | Record<string, unknown>[] | undefined;
-    const rows = Array.isArray(body) ? body : body?.items || body?.data || [];
+    const rows = rowsFromPayload(payload);
     if (!rows.length) return false;
     results.splice(0, results.length, ...rows.map((row, index) => ({
-      id: String(row.id ?? row.order_id ?? `LIVE-RESULT-${index}`), user: String(row.nickname ?? row.username ?? '--'),
-      record: String(row.history_record ?? row.record ?? '--'), selfBuy: Number(row.self_buy ?? row.stake ?? 0) || 0,
-      followers: Number(row.follow_num ?? row.followers ?? 0) || 0, payout: Number(row.bonus ?? row.payout ?? 0) || 0,
-      bets: Number(row.bet_count ?? row.bets ?? 0) || 0, detail: String(row.detail ?? row.selection ?? '--'),
-      result: String(row.result ?? '待开奖') as never, date: String(row.date ?? row.publish_time ?? '--'), odds: Number(row.odds ?? row.odds_text ?? 0) || 0,
+      id: text(row.id ?? row.order_id, `LIVE-RESULT-${index}`),
+      user: text(row.nickname ?? row.username, '未知用户'),
+      record: text(row.history_record ?? row.record),
+      selfBuy: number(row.self_buy ?? row.stake),
+      followers: number(row.follow_num ?? row.followers),
+      payout: number(row.bonus ?? row.payout),
+      bets: number(row.bet_count ?? row.bets),
+      detail: text(row.detail ?? row.selection),
+      result: text(row.result, '待开奖') as never,
+      date: text(row.date ?? row.publish_time),
+      odds: number(row.odds ?? row.odds_text),
     })));
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export async function loadHeatmap(): Promise<boolean> {
@@ -132,19 +191,20 @@ export async function loadHeatmap(): Promise<boolean> {
     if (!response.ok) return false;
     const payload = await response.json() as { code?: number; data?: unknown };
     if (payload.code !== undefined && payload.code !== 200) return false;
-    const body = payload.data as { items?: Record<string, unknown>[]; data?: Record<string, unknown>[] } | Record<string, unknown>[] | undefined;
-    const rows = Array.isArray(body) ? body : body?.items || body?.data || [];
+    const rows = rowsFromPayload(payload);
     if (!rows.length) return false;
-    const groups:Record<string,Array<{rank:number;match:string;time:string;league:string;pick:string;count:number}>> = {};
+    const groups: Record<string, Array<{ rank: number; match: string; time: string; league: string; pick: string; count: number }>> = {};
     Object.keys(hot).forEach((key) => { groups[key] = []; });
     rows.forEach((row, index) => {
-      const play = String(row.play_type ?? row.play ?? '');
+      const play = text(row.play_type ?? row.play, '');
       if (!(play in groups)) return;
-      groups[play].push({ rank: index + 1, match: String(row.match_name ?? row.match ?? '--'), time: String(row.match_time ?? row.time ?? '--'), league: String(row.league ?? '--'), pick: String(row.selection ?? row.option ?? '--'), count: Number(row.count ?? 0) || 0 });
+      groups[play].push({ rank: index + 1, match: text(row.match_name ?? row.match), time: text(row.match_time ?? row.time), league: text(row.league), pick: text(row.selection ?? row.option), count: number(row.count) });
     });
     for (const key of Object.keys(hot) as Array<keyof typeof hot>) if (groups[key].length) hot[key].splice(0, hot[key].length, ...groups[key]);
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export async function loadAnalysis(): Promise<boolean> {
@@ -155,13 +215,21 @@ export async function loadAnalysis(): Promise<boolean> {
     if (payload.code !== undefined && payload.code !== 200) return false;
     const data = payload.data || {};
     const match = (data.match || data) as Record<string, unknown>;
-    if (match.home || match.home_team) { analysisMatch.home = String(match.home ?? match.home_team); analysisMatch.away = String(match.away ?? match.away_team ?? '--'); analysisMatch.league = String(match.league ?? match.league_name ?? '--'); analysisMatch.kickoff = String(match.kickoff ?? match.match_time ?? '--'); analysisMatch.score = String(match.score ?? '—'); }
+    if (match.home || match.home_team) {
+      analysisMatch.home = text(match.home ?? match.home_team);
+      analysisMatch.away = text(match.away ?? match.away_team);
+      analysisMatch.league = text(match.league ?? match.league_name);
+      analysisMatch.kickoff = text(match.kickoff ?? match.match_time);
+      analysisMatch.score = text(match.score, '—');
+    }
     const cardRows = Array.isArray(data.cards) ? data.cards : [];
-    if (cardRows.length) { analysisCards.splice(0, analysisCards.length, ...cardRows.map((row) => ({ label: String((row as Record<string, unknown>).label ?? '--'), value: String((row as Record<string, unknown>).value ?? '--'), meta: String((row as Record<string, unknown>).meta ?? '') }))); }
+    if (cardRows.length) analysisCards.splice(0, analysisCards.length, ...cardRows.filter(isRow).map((row) => ({ label: text(row.label), value: text(row.value), meta: text(row.meta, '') })));
     const timelineRows = Array.isArray(data.timeline) ? data.timeline : [];
     if (timelineRows.length) timeline.splice(0, timeline.length, ...(timelineRows as typeof timeline));
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export async function loadNews(matchId?: string): Promise<boolean> {
@@ -171,10 +239,11 @@ export async function loadNews(matchId?: string): Promise<boolean> {
     if (!response.ok) return false;
     const payload = await response.json() as { code?: number; data?: unknown };
     if (payload.code !== undefined && payload.code !== 200) return false;
-    const body = payload.data as { items?: Record<string, unknown>[]; data?: Record<string, unknown>[] } | Record<string, unknown>[] | undefined;
-    const rows = Array.isArray(body) ? body : body?.items || body?.data || [];
+    const rows = rowsFromPayload(payload);
     if (!rows.length) return false;
-    news.splice(0, news.length, ...rows.map((row, index) => ({ id: String(row.id ?? `LIVE-NEWS-${index}`), title: String(row.title ?? row.content ?? '--'), time: String(row.time ?? row.publish_time ?? '--'), category: String(row.category ?? '赛事资讯'), matchId: row.match_id ? String(row.match_id) : undefined })));
+    news.splice(0, news.length, ...rows.map((row, index) => ({ id: text(row.id, `LIVE-NEWS-${index}`), title: text(row.title ?? row.content), time: text(row.time ?? row.publish_time), category: text(row.category, '赛事资讯'), matchId: row.match_id ? String(row.match_id) : undefined })));
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }

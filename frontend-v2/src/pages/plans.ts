@@ -1,18 +1,74 @@
 import { plans } from '../services/plans.js';
 import type { Plan } from '../types/index.js';
-import { badge,drawer,emptyState,metric,pageHeader,panel } from '../components/ui.js';
+import { avatar, badge, drawer, emptyState, metric, pageHeader, panel } from '../components/ui.js';
 import { money } from '../utils/format.js';
 import { esc } from '../utils/dom.js';
-export interface PlansState{query:string;platform:string;league:string;result:string;page:number;view:'table'|'cards';selectedPlan:string|null}
-const pageSize=8;
-export function renderPlans(s:PlansState){const rows=plans.filter(p=>(s.platform==='全部'||p.platform===s.platform)&&(s.league==='全部'||p.league===s.league)&&(s.result==='全部'||p.result===s.result)&&(!s.query||`${p.user}${p.match}${p.pick}${p.id}`.toLowerCase().includes(s.query.toLowerCase())));const total=Math.max(1,Math.ceil(rows.length/pageSize));if(s.page>total)s.page=total;const pageRows=rows.slice((s.page-1)*pageSize,s.page*pageSize);
- let html=pageHeader('PLAN MARKET','方案大厅','聚合各平台发单方案、投注项与赛果状态',`<div class="view-switch"><button data-action="plans-view-table" class="${s.view==='table'?'active':''}">☷</button><button data-action="plans-view-cards" class="${s.view==='cards'?'active':''}">▦</button></div>`);
- html+=`<div class="filter-toolbar"><div class="search-box wide"><span>⌕</span><input data-input="plans-query" value="${esc(s.query)}" placeholder="搜索方案、用户、比赛、投注项"/></div>${select('平台','plans-platform',s.platform,['全部','平台A','平台B','平台C','平台D'])}${select('联赛','plans-league',s.league,['全部','英超','西甲','德甲','意甲','法甲','欧冠'])}${select('结果','plans-result',s.result,['全部','已中奖','未中奖','待开奖','走盘'])}<button class="btn">☷ 更多筛选</button><button class="btn ghost" data-action="plans-reset">重置筛选</button></div>`;
- const body=!rows.length?emptyState('暂无方案数据'):s.view==='table'?table(pageRows):cards(pageRows);
- html+=panel('方案数据列表',body+pagination(s.page,total),`<span class="muted">共 ${rows.length} 条</span>`);
- const selected=plans.find(p=>p.id===s.selectedPlan);if(selected)html+=planDrawer(selected);return html}
-function select(label:string,key:string,value:string,items:string[]){return `<label class="select-field"><span>${label}</span><select data-select="${key}">${items.map(i=>`<option ${i===value?'selected':''}>${esc(i)}</option>`).join('')}</select></label>`}
-function table(rows:Plan[]){return `<div class="table-wrap"><table><thead><tr><th>平台</th><th>发单用户</th><th>用户 ID</th><th>比赛</th><th>联赛</th><th>玩法</th><th>投注项</th><th>投注金额</th><th>倍数</th><th>发布时间</th><th>截止时间</th><th>方案状态</th><th>赛果</th><th>预计收益</th></tr></thead><tbody>${rows.map(p=>`<tr class="clickable" data-open-plan="${p.id}"><td>${esc(p.platform)}</td><td><button class="link-btn" data-open-plan="${p.id}">${esc(p.user)}</button></td><td class="muted">${esc(p.userId)}</td><td class="ellipsis-cell">${esc(p.match)}</td><td><span class="league-tag">${esc(p.league)}</span></td><td>${esc(p.play)}</td><td class="ellipsis-cell">${esc(p.pick)}</td><td>${money(p.amount)}</td><td>${p.multiple}x</td><td>${esc(p.publishAt)}</td><td>${esc(p.cutoffAt)}</td><td>${badge(p.status,p.status==='已结算'?'done':'live')}</td><td>${badge(p.result,p.result==='已中奖'?'danger':p.result==='未中奖'?'dark':p.result==='走盘'?'warning':'pending')}</td><td class="${p.expectedProfit>0?'positive':p.expectedProfit<0?'negative':''}">${money(p.expectedProfit)}</td></tr>`).join('')}</tbody></table></div>`}
-function cards(rows:Plan[]){return `<div class="plan-card-grid">${rows.map(p=>`<button class="plan-card" data-open-plan="${p.id}"><div>${badge(p.platform)}<span>${esc(p.league)}</span></div><h3>${esc(p.match)}</h3><b>${esc(p.pick)}</b><small>${esc(p.user)} · ${esc(p.play)}</small><div class="plan-kpis"><span>${money(p.amount)}</span>${badge(p.result,p.result==='已中奖'?'danger':'pending')}</div></button>`).join('')}</div>`}
-function pagination(page:number,total:number){return `<div class="pagination"><button data-page="${Math.max(1,page-1)}" ${page<=1?'disabled':''}>‹</button><span>第 ${page} / ${total} 页</span><button data-page="${Math.min(total,page+1)}" ${page>=total?'disabled':''}>›</button></div>`}
-function planDrawer(p:Plan){return drawer('方案详情',`<div class="detail-stack"><div class="drawer-title-block">${badge(p.platform)}<h2>${esc(p.match)}</h2><span>${esc(p.id)}</span></div><div class="profile-card"><div class="avatar">${esc(p.user.slice(0,1))}</div><div><b>${esc(p.user)}</b><span>ID ${esc(p.userId)} · ${esc(p.platform)}</span></div><button class="btn small">查看用户</button></div><div class="detail-grid">${metric('玩法',p.play)}${metric('投注项',p.pick)}${metric('投注金额',money(p.amount))}${metric('倍数',`${p.multiple}x`)}${metric('赛果',p.result)}${metric('预计收益',money(p.expectedProfit))}</div></div>`)}
+
+export interface PlansState {
+  query: string;
+  platform: string;
+  league: string;
+  result: string;
+  page: number;
+  view: 'table' | 'cards';
+  selectedPlan: string | null;
+}
+
+const pageSize = 8;
+const platformOptions = ['全部', '彩站云', '州运宝', '鸿瑞', '云彩'];
+
+export function renderPlans(state: PlansState) {
+  const query = state.query.trim().toLowerCase();
+  const rows = plans.filter((plan) => {
+    const platformMatch = state.platform === '全部' || plan.platform === state.platform;
+    const resultMatch = state.result === '全部' || plan.result === state.result;
+    const queryMatch = !query || `${plan.user}${plan.userId}${plan.id}${plan.pick}`.toLowerCase().includes(query);
+    return platformMatch && resultMatch && queryMatch;
+  });
+
+  const total = Math.max(1, Math.ceil(rows.length / pageSize));
+  if (state.page > total) state.page = total;
+  const pageRows = rows.slice((state.page - 1) * pageSize, state.page * pageSize);
+  let html = pageHeader(
+    'PLAN MARKET',
+    '方案大厅',
+    '聚合各平台发单方案，展示金额、SP赔率与结算状态',
+    `<div class="view-switch"><button data-action="plans-view-table" class="${state.view === 'table' ? 'active' : ''}">☷</button><button data-action="plans-view-cards" class="${state.view === 'cards' ? 'active' : ''}">▦</button></div>`,
+  );
+
+  html += `<div class="filter-toolbar"><div class="search-box wide"><span>⌕</span><input data-input="plans-query" value="${esc(state.query)}" placeholder="搜索方案、用户或订单号"/></div>${select('平台', 'plans-platform', state.platform, platformOptions)}${select('结果', 'plans-result', state.result, ['全部', '已中奖', '未中奖', '待开奖', '走盘'])}<button class="btn ghost" data-action="plans-reset">重置筛选</button></div>`;
+
+  const body = !pageRows.length ? emptyState('暂无方案数据', '当前平台或结果筛选下没有可展示方案') : state.view === 'table' ? table(pageRows) : cards(pageRows);
+  html += panel('方案数据列表', body + pagination(state.page, total), `<span class="muted">共 ${rows.length} 条</span>`);
+
+  const selected = plans.find((plan) => plan.id === state.selectedPlan);
+  if (selected) html += planDrawer(selected);
+  return html;
+}
+
+function select(label: string, key: string, value: string, items: string[]) {
+  return `<label class="select-field"><span>${label}</span><select data-select="${key}">${items.map((item) => `<option ${item === value ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label>`;
+}
+
+function resultTone(result: Plan['result']) {
+  if (result === '已中奖') return 'danger';
+  if (result === '未中奖') return 'dark';
+  if (result === '走盘') return 'warning';
+  return 'pending';
+}
+
+function table(rows: Plan[]) {
+  return `<div class="table-wrap"><table class="plans-table"><thead><tr><th>平台</th><th>发单用户</th><th>用户 ID</th><th>投注金额</th><th>SP赔率</th><th>发布时间</th><th>方案状态</th><th>赛果</th><th>预计收益</th></tr></thead><tbody>${rows.map((plan) => `<tr class="clickable" data-open-plan="${esc(plan.id)}"><td><span class="platform-label">${esc(plan.platform)}</span></td><td><button class="user-cell" data-open-plan="${esc(plan.id)}">${avatar(plan.avatar, plan.user)}<span><b>${esc(plan.user)}</b><small>订单 ${esc(plan.id)}</small></span></button></td><td class="muted">${esc(plan.userId)}</td><td>${money(plan.amount)}</td><td class="odds-value">${esc(plan.sp || '--')}</td><td>${esc(plan.publishAt)}</td><td>${badge(plan.status, plan.status === '已结算' ? 'done' : 'live')}</td><td>${badge(plan.result, resultTone(plan.result))}</td><td class="${plan.expectedProfit > 0 ? 'positive' : plan.expectedProfit < 0 ? 'negative' : ''}">${money(plan.expectedProfit)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function cards(rows: Plan[]) {
+  return `<div class="plan-card-grid">${rows.map((plan) => `<button class="plan-card" data-open-plan="${esc(plan.id)}"><div>${badge(plan.platform)}<span>${esc(plan.publishAt)}</span></div><div class="plan-card-user">${avatar(plan.avatar, plan.user)}<b>${esc(plan.user)}</b></div><div class="plan-card-kpis"><span>投注金额<strong>${money(plan.amount)}</strong></span><span>SP赔率<strong class="odds-value">${esc(plan.sp || '--')}</strong></span></div><div class="plan-card-status">${badge(plan.result, resultTone(plan.result))}<span>${esc(plan.status)}</span></div></button>`).join('')}</div>`;
+}
+
+function pagination(page: number, total: number) {
+  return `<div class="pagination"><button data-page="${Math.max(1, page - 1)}" ${page <= 1 ? 'disabled' : ''}>‹</button><span>第 ${page} / ${total} 页</span><button data-page="${Math.min(total, page + 1)}" ${page >= total ? 'disabled' : ''}>›</button></div>`;
+}
+
+function planDrawer(plan: Plan) {
+  return drawer('方案详情', `<div class="detail-stack"><div class="drawer-title-block">${badge(plan.platform)}<h2>${esc(plan.user)}</h2><span>订单 ${esc(plan.id)} · ${esc(plan.publishAt)}</span></div><div class="profile-card">${avatar(plan.avatar, plan.user, 'large')}<div><b>${esc(plan.user)}</b><span>用户 ID ${esc(plan.userId)} · ${esc(plan.platform)}</span></div></div><div class="detail-grid">${metric('投注金额', money(plan.amount))}${metric('SP赔率', plan.sp || '--')}${metric('方案状态', plan.status)}${metric('赛果', plan.result)}${metric('预计收益', money(plan.expectedProfit), '', plan.expectedProfit >= 0 ? 'success' : 'danger')}${metric('发布时间', plan.publishAt)}</div></div>`);
+}

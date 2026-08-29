@@ -64,7 +64,7 @@ backup*/
 *_backup*
 *.bak
 *.bak_*
-~*
+*~
 main.py.bak_*
 
 # Temporary/debug pages and copied files
