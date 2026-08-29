@@ -104,7 +104,7 @@ classify_changes() {
         esac
 
         case "$file_name" in
-            frontend/*)
+            frontend/*|frontend-v2/*|scripts/build_frontend_v2.mjs)
                 FRONTEND_CHANGED=1
                 ;;
         esac
@@ -217,7 +217,7 @@ migration_detected() {
 frontend_source_commit() {
     local target_commit="$1"
 
-    admin_git log -1 --format=%H "$target_commit" -- frontend
+    admin_git log -1 --format=%H "$target_commit" -- frontend frontend-v2 scripts/build_frontend_v2.mjs
 }
 
 
